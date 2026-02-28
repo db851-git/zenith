@@ -1,14 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import DateTimePicker from "@react-native-community/datetimepicker";
-import { useFocusEffect, useRouter } from "expo-router";
+import * as Notifications from "expo-notifications";
+import { useRouter } from "expo-router";
+import { onAuthStateChanged } from "firebase/auth";
 import {
-  createUserWithEmailAndPassword,
-  onAuthStateChanged,
-  signInWithEmailAndPassword,
-} from "firebase/auth";
-import {
-  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -17,23 +12,28 @@ import {
   updateDoc,
   where
 } from "firebase/firestore";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 import { auth, db } from "../../firebaseConfig";
+
+// 1. Configure Notifications
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 interface Task {
   id: string;
@@ -50,14 +50,6 @@ interface Task {
   createdAt: any;
 }
 
-const BG_COLORS = [
-  "#ffffff",
-  "#fef2f2",
-  "#f0fdf4",
-  "#eff6ff",
-  "#fff7ed",
-  "#faf5ff",
-];
 const STORAGE_KEY = "@zenith_tasks_cache";
 
 export default function Index() {
@@ -65,26 +57,15 @@ export default function Index() {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [tagline, setTagline] = useState("Let's be productive.");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isLoginMode, setIsLoginMode] = useState(true);
-  const [modalVisible, setModalVisible] = useState(false);
-  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [category, setCategory] = useState("Work");
-  const [customCategory, setCustomCategory] = useState("");
-  const [priority, setPriority] = useState<"High" | "Medium" | "Low">("Medium");
-  const [selectedBgColor, setSelectedBgColor] = useState(BG_COLORS[0]);
-  const [targetDate, setTargetDate] = useState(new Date());
-  const [startTime, setStartTime] = useState(new Date());
-  const [endTime, setEndTime] = useState(
-    new Date(new Date().getTime() + 60 * 60 * 1000),
-  );
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [showStartPicker, setShowStartPicker] = useState(false);
-  const [showEndPicker, setShowEndPicker] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
+
+  const formatTime = (isoString?: string) => {
+    if (!isoString) return "";
+    return new Date(isoString).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
 
   const saveTasksLocally = async (newTasks: Task[]) => {
     try {
@@ -109,19 +90,6 @@ export default function Index() {
         return "#2563eb";
       default:
         return "#4b5563";
-    }
-  };
-
-  const getCategoryDefaultBg = (cat: string) => {
-    switch (cat) {
-      case "Work":
-        return "#eff6ff";
-      case "Study":
-        return "#fefce8";
-      case "Personal":
-        return "#f0fdf4";
-      default:
-        return "#ffffff";
     }
   };
 
@@ -151,6 +119,13 @@ export default function Index() {
     return acc;
   }, {});
   const sortedDates = Object.keys(groupedTasks).sort();
+
+  useEffect(() => {
+    async function requestPermissions() {
+      const { status } = await Notifications.requestPermissionsAsync();
+    }
+    requestPermissions();
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -194,7 +169,9 @@ export default function Index() {
         const dateA = new Date(a.targetDate).getTime();
         const dateB = new Date(b.targetDate).getTime();
         if (dateA !== dateB) return dateA - dateB;
-        return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
+        const timeA = a.startTime ? new Date(a.startTime).getTime() : 0;
+        const timeB = b.startTime ? new Date(b.startTime).getTime() : 0;
+        return timeA - timeB;
       });
       setTasks(taskList);
       saveTasksLocally(taskList);
@@ -211,86 +188,32 @@ export default function Index() {
     return () => unsubUser();
   }, [user]);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (auth.currentUser) setUser({ ...auth.currentUser });
-    }, []),
-  );
+  const scheduleAlarm = async (task: Task) => {
+    if (!task.startTime)
+      return Alert.alert("No Time", "This task has no start time.");
 
-  const handleAuth = async () => {
-    if (!email || !password)
-      return Alert.alert("Error", "Please fill in all fields");
-    try {
-      if (isLoginMode) await signInWithEmailAndPassword(auth, email, password);
-      else await createUserWithEmailAndPassword(auth, email, password);
-    } catch (e: any) {
-      Alert.alert("Authentication Error", e.message);
+    const triggerDate = new Date(task.startTime);
+    const now = new Date();
+
+    if (triggerDate < now) {
+      return Alert.alert("Oops", "Cannot set alarm for a time in the past!");
     }
-  };
 
-  const openAddModal = () => {
-    setEditingTaskId(null);
-    setTitle("");
-    setDescription("");
-    setCategory("Work");
-    setCustomCategory("");
-    setPriority("Medium");
-    setSelectedBgColor(BG_COLORS[0]);
-    setTargetDate(new Date());
-    setStartTime(new Date());
-    setEndTime(new Date(new Date().getTime() + 60 * 60 * 1000));
-    setModalVisible(true);
-  };
-
-  const openEditModal = (task: Task) => {
-    setEditingTaskId(task.id);
-    setTitle(task.title);
-    setDescription(task.description || "");
-    setPriority(task.priority);
-    setSelectedBgColor(task.customColor || BG_COLORS[0]);
-    if (task.targetDate) setTargetDate(new Date(task.targetDate));
-    if (["Work", "Study", "Personal"].includes(task.category)) {
-      setCategory(task.category);
-      setCustomCategory("");
-    } else {
-      setCategory("Custom");
-      setCustomCategory(task.category);
-    }
-    setStartTime(task.startTime ? new Date(task.startTime) : new Date());
-    setEndTime(task.endTime ? new Date(task.endTime) : new Date());
-    setModalVisible(true);
-  };
-
-  const saveTaskToCloud = async () => {
-    if (!title.trim()) return Alert.alert("Error", "Please enter a title");
-    const finalCategory =
-      category === "Custom" ? customCategory.trim() || "Custom" : category;
-    let finalBgColor = selectedBgColor;
-    if (selectedBgColor === "#ffffff")
-      finalBgColor = getCategoryDefaultBg(finalCategory);
-    const taskData = {
-      title,
-      description,
-      category: finalCategory,
-      priority,
-      customColor: finalBgColor,
-      targetDate: targetDate.toISOString(),
-      startTime: startTime.toISOString(),
-      endTime: endTime.toISOString(),
-      userId: user.uid,
-    };
     try {
-      if (editingTaskId)
-        await updateDoc(doc(db, "tasks", editingTaskId), taskData);
-      else
-        await addDoc(collection(db, "tasks"), {
-          ...taskData,
-          status: "Pending",
-          createdAt: new Date(),
-        });
-      setModalVisible(false);
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "⏰ It's time!",
+          body: `Start working on: ${task.title}`,
+          sound: true,
+        },
+        trigger: triggerDate,
+      });
+      Alert.alert(
+        "Alarm Set",
+        `Notifying you at ${formatTime(task.startTime)}`,
+      );
     } catch (e: any) {
-      Alert.alert("Error", e.message);
+      Alert.alert("Error", "Could not set alarm. " + e.message);
     }
   };
 
@@ -321,42 +244,9 @@ export default function Index() {
 
   if (!user) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.loginContainer}>
-          <Text style={styles.loginTitle}>Zenith</Text>
-          <Text style={styles.loginSubtitle}>
-            {isLoginMode ? "Sign in to sync" : "Create an account"}
-          </Text>
-          <TextInput
-            placeholder="Email"
-            value={email}
-            onChangeText={setEmail}
-            style={styles.input}
-            autoCapitalize="none"
-            placeholderTextColor="#9ca3af"
-          />
-          <TextInput
-            placeholder="Password"
-            value={password}
-            onChangeText={setPassword}
-            style={styles.input}
-            secureTextEntry
-            placeholderTextColor="#9ca3af"
-          />
-          <TouchableOpacity style={styles.authButton} onPress={handleAuth}>
-            <Text style={styles.authButtonText}>
-              {isLoginMode ? "Log In" : "Sign Up"}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setIsLoginMode(!isLoginMode)}>
-            <Text style={styles.switchText}>
-              {isLoginMode
-                ? "New here? Create account"
-                : "Have an account? Log in"}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
+      <View style={styles.center}>
+        <Text>Please Log In</Text>
+      </View>
     );
   }
 
@@ -370,9 +260,7 @@ export default function Index() {
       <View style={styles.container}>
         <View style={styles.header}>
           <View>
-            <Text style={styles.greeting}>
-              Hi, {user.displayName || "User"}
-            </Text>
+            <Text style={styles.greeting}>Hi, {user.displayName || "Deb"}</Text>
             <Text style={styles.subGreeting}>{tagline}</Text>
           </View>
           <TouchableOpacity onPress={() => router.push("/profile")}>
@@ -388,6 +276,7 @@ export default function Index() {
             )}
           </TouchableOpacity>
         </View>
+
         <View style={styles.statsRow}>
           <View style={styles.statCard}>
             <Text style={styles.statLabel}>Progress</Text>
@@ -398,6 +287,7 @@ export default function Index() {
             <Text style={styles.statValue}>{pendingCount}</Text>
           </View>
         </View>
+
         <ScrollView contentContainerStyle={{ paddingBottom: 100 }}>
           {sortedDates.length === 0 ? (
             <Text
@@ -460,6 +350,19 @@ export default function Index() {
                             {task.title}
                           </Text>
                         </View>
+                        {task.startTime && (
+                          <View style={styles.timeRow}>
+                            <Ionicons
+                              name="time-outline"
+                              size={12}
+                              color="#6b7280"
+                            />
+                            <Text style={styles.timeText}>
+                              {formatTime(task.startTime)} -{" "}
+                              {formatTime(task.endTime)}
+                            </Text>
+                          </View>
+                        )}
                         {task.description ? (
                           <Text style={styles.taskDesc} numberOfLines={2}>
                             {task.description}
@@ -489,26 +392,28 @@ export default function Index() {
                           </View>
                         </View>
                       </View>
-                      <TouchableOpacity
-                        onPress={() => openEditModal(task)}
-                        style={styles.iconBtn}
-                      >
-                        <Ionicons
-                          name="create-outline"
-                          size={20}
-                          color="#6b7280"
-                        />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={() => deleteTask(task.id)}
-                        style={styles.iconBtn}
-                      >
-                        <Ionicons
-                          name="trash-outline"
-                          size={20}
-                          color="#ef4444"
-                        />
-                      </TouchableOpacity>
+                      <View style={{ alignItems: "center", gap: 5 }}>
+                        <TouchableOpacity
+                          onPress={() => scheduleAlarm(task)}
+                          style={styles.iconBtn}
+                        >
+                          <Ionicons
+                            name="notifications-outline"
+                            size={20}
+                            color="#111827"
+                          />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => deleteTask(task.id)}
+                          style={styles.iconBtn}
+                        >
+                          <Ionicons
+                            name="trash-outline"
+                            size={20}
+                            color="#ef4444"
+                          />
+                        </TouchableOpacity>
+                      </View>
                     </View>
                   );
                 })}
@@ -516,182 +421,7 @@ export default function Index() {
             ))
           )}
         </ScrollView>
-        <TouchableOpacity style={styles.fab} onPress={openAddModal}>
-          <Ionicons name="add" size={30} color="#fff" />
-        </TouchableOpacity>
       </View>
-      <Modal visible={modalVisible} animationType="slide" transparent={true}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={styles.modalOverlay}
-        >
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                {editingTaskId ? "Edit Task" : "New Task"}
-              </Text>
-              <TouchableOpacity onPress={() => setModalVisible(false)}>
-                <Ionicons name="close" size={24} color="#6b7280" />
-              </TouchableOpacity>
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={styles.label}>Title</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Task Name"
-                value={title}
-                onChangeText={setTitle}
-                placeholderTextColor="#9ca3af"
-              />
-              <Text style={styles.label}>Description</Text>
-              <TextInput
-                style={[styles.input, { height: 60 }]}
-                placeholder="Details..."
-                value={description}
-                onChangeText={setDescription}
-                multiline
-                placeholderTextColor="#9ca3af"
-              />
-              <Text style={styles.label}>Date & Time</Text>
-              <View style={{ gap: 10 }}>
-                <TouchableOpacity
-                  style={styles.dateInput}
-                  onPress={() => setShowDatePicker(true)}
-                >
-                  <Ionicons name="calendar-outline" size={20} color="#4b5563" />
-                  <Text style={{ fontSize: 16, color: "#111827" }}>
-                    {targetDate.toDateString()}
-                  </Text>
-                </TouchableOpacity>
-                <View style={styles.timeRow}>
-                  <TouchableOpacity
-                    style={styles.timeBtn}
-                    onPress={() => setShowStartPicker(true)}
-                  >
-                    <Text style={styles.timeLabel}>
-                      {startTime.toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </Text>
-                  </TouchableOpacity>
-                  <Text>-</Text>
-                  <TouchableOpacity
-                    style={styles.timeBtn}
-                    onPress={() => setShowEndPicker(true)}
-                  >
-                    <Text style={styles.timeLabel}>
-                      {endTime.toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-              {showDatePicker && (
-                <DateTimePicker
-                  value={targetDate}
-                  mode="date"
-                  onChange={(e, d) => {
-                    setShowDatePicker(false);
-                    if (d) setTargetDate(d);
-                  }}
-                />
-              )}
-              {showStartPicker && (
-                <DateTimePicker
-                  value={startTime}
-                  mode="time"
-                  onChange={(e, d) => {
-                    setShowStartPicker(false);
-                    if (d) setStartTime(d);
-                  }}
-                />
-              )}
-              {showEndPicker && (
-                <DateTimePicker
-                  value={endTime}
-                  mode="time"
-                  onChange={(e, d) => {
-                    setShowEndPicker(false);
-                    if (d) setEndTime(d);
-                  }}
-                />
-              )}
-              <Text style={styles.label}>Priority</Text>
-              <View style={styles.catRow}>
-                {["High", "Medium", "Low"].map((p) => (
-                  <TouchableOpacity
-                    key={p}
-                    onPress={() => setPriority(p as any)}
-                    style={[
-                      styles.pill,
-                      priority === p && {
-                        backgroundColor: "#f3f4f6",
-                        borderColor: "#111827",
-                        borderWidth: 1,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={{ color: getPriorityColor(p), fontWeight: "bold" }}
-                    >
-                      {p}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <Text style={styles.label}>Category</Text>
-              <View style={styles.catRow}>
-                {["Work", "Study", "Personal", "Custom"].map((cat) => (
-                  <TouchableOpacity
-                    key={cat}
-                    onPress={() => setCategory(cat)}
-                    style={[styles.pill, category === cat && styles.pillActive]}
-                  >
-                    <Text
-                      style={{ color: category === cat ? "#fff" : "#4b5563" }}
-                    >
-                      {cat}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              {category === "Custom" && (
-                <TextInput
-                  style={[styles.input, { marginTop: 10 }]}
-                  placeholder="Category Name..."
-                  value={customCategory}
-                  onChangeText={setCustomCategory}
-                />
-              )}
-              <Text style={styles.label}>Custom Card Background</Text>
-              <View style={styles.colorRow}>
-                {BG_COLORS.map((c) => (
-                  <TouchableOpacity
-                    key={c}
-                    style={[
-                      styles.colorCircle,
-                      { backgroundColor: c },
-                      selectedBgColor === c && styles.colorSelected,
-                    ]}
-                    onPress={() => setSelectedBgColor(c)}
-                  />
-                ))}
-              </View>
-              <TouchableOpacity
-                style={styles.saveButton}
-                onPress={saveTaskToCloud}
-              >
-                <Text style={styles.saveButtonText}>
-                  {editingTaskId ? "Update Task" : "Save Task"}
-                </Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -700,20 +430,6 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: "#f9fafb" },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   container: { flex: 1, padding: 20 },
-  loginContainer: { flex: 1, justifyContent: "center", padding: 20 },
-  loginTitle: {
-    fontSize: 32,
-    fontWeight: "bold",
-    textAlign: "center",
-    marginBottom: 10,
-  },
-  loginSubtitle: {
-    fontSize: 16,
-    color: "#6b7280",
-    textAlign: "center",
-    marginBottom: 30,
-  },
-  switchText: { textAlign: "center", color: "#2563eb", marginTop: 15 },
   header: {
     marginBottom: 20,
     marginTop: 10,
@@ -781,9 +497,16 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     fontSize: 16,
     color: "#111827",
-    marginBottom: 4,
+    marginBottom: 2,
   },
   taskDesc: { fontSize: 13, color: "#6b7280", marginBottom: 8, lineHeight: 18 },
+  timeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginBottom: 6,
+  },
+  timeText: { fontSize: 12, color: "#6b7280", fontWeight: "500" },
   metaRow: { flexDirection: "row", alignItems: "center", marginTop: 2 },
   catBadge: {
     backgroundColor: "#fff",
@@ -794,105 +517,4 @@ const styles = StyleSheet.create({
     borderColor: "#e5e7eb",
   },
   iconBtn: { padding: 8 },
-  fab: {
-    position: "absolute",
-    bottom: 20,
-    right: 20,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: "#111827",
-    alignItems: "center",
-    justifyContent: "center",
-    elevation: 5,
-  },
-  modalOverlay: {
-    flex: 1,
-    justifyContent: "flex-end",
-    backgroundColor: "rgba(0,0,0,0.5)",
-  },
-  modalContent: {
-    backgroundColor: "#fff",
-    padding: 20,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    maxHeight: "85%",
-  },
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  modalTitle: { fontSize: 20, fontWeight: "bold", color: "#111827" },
-  label: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#6b7280",
-    marginBottom: 6,
-    marginTop: 15,
-    textTransform: "uppercase",
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    padding: 12,
-    borderRadius: 12,
-    fontSize: 16,
-    color: "#111827",
-    backgroundColor: "#f9fafb",
-  },
-  dateInput: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-    borderRadius: 12,
-    backgroundColor: "#f9fafb",
-  },
-  timeRow: { flexDirection: "row", gap: 10, alignItems: "center" },
-  timeBtn: {
-    flex: 1,
-    backgroundColor: "#f3f4f6",
-    padding: 12,
-    borderRadius: 12,
-    alignItems: "center",
-  },
-  timeLabel: { fontSize: 14, fontWeight: "600", color: "#4b5563" },
-  catRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
-  pill: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    backgroundColor: "#f3f4f6",
-  },
-  pillActive: { backgroundColor: "#111827" },
-  colorRow: { flexDirection: "row", gap: 12 },
-  colorCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-  },
-  colorSelected: { borderWidth: 3, borderColor: "#111827" },
-  authButton: {
-    backgroundColor: "#111827",
-    padding: 16,
-    borderRadius: 12,
-    alignItems: "center",
-    marginTop: 10,
-  },
-  authButtonText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
-  saveButton: {
-    backgroundColor: "#111827",
-    padding: 16,
-    borderRadius: 12,
-    alignItems: "center",
-    marginTop: 30,
-    marginBottom: 40,
-  },
-  saveButtonText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
 });
