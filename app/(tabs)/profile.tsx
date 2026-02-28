@@ -2,20 +2,27 @@ import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { sendPasswordResetEmail, signOut, updateProfile } from "firebase/auth";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  onSnapshot,
+  query,
+  setDoc,
+  where,
+} from "firebase/firestore";
 import { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { auth, db } from "../../firebaseConfig";
 
@@ -26,25 +33,64 @@ export default function Profile() {
   const [loading, setLoading] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
+  // Stats State
+  const [completedCount, setCompletedCount] = useState(0);
+  const [pendingCount, setPendingCount] = useState(0);
+
   useEffect(() => {
-    // Always sync with the real auth user on load
     const currentUser = auth.currentUser;
     if (currentUser) {
       setUser(currentUser);
       setDisplayName(currentUser.displayName || "");
 
-      const fetchUserData = async () => {
-        const userDoc = await getDoc(doc(db, "users", currentUser.uid));
-        if (userDoc.exists()) setTagline(userDoc.data().tagline || "");
+      // 1. Listen to User Profile Changes (Tagline)
+      const unsubUser = onSnapshot(
+        doc(db, "users", currentUser.uid),
+        (docSnap) => {
+          if (docSnap.exists()) {
+            setTagline(docSnap.data().tagline || "");
+          }
+        },
+      );
+
+      // 2. Listen to Task Changes (REAL-TIME STATS)
+      const q = query(
+        collection(db, "tasks"),
+        where("userId", "==", currentUser.uid),
+      );
+      const unsubTasks = onSnapshot(q, (querySnapshot) => {
+        let done = 0;
+        let pending = 0;
+        querySnapshot.forEach((doc) => {
+          if (doc.data().status === "Completed") done++;
+          else pending++;
+        });
+        setCompletedCount(done);
+        setPendingCount(pending);
+      });
+
+      // Cleanup listeners when leaving the screen
+      return () => {
+        unsubUser();
+        unsubTasks();
       };
-      fetchUserData();
     }
   }, []);
+
+  // Calculate Level based on tasks
+  const getLevel = () => {
+    if (completedCount > 50) return { title: "Grandmaster", color: "#7c3aed" }; // Purple
+    if (completedCount > 20) return { title: "Achiever", color: "#059669" }; // Green
+    if (completedCount > 5) return { title: "Hustler", color: "#d97706" }; // Orange
+    return { title: "Novice", color: "#6b7280" }; // Grey
+  };
+
+  const level = getLevel();
 
   const pickImage = async () => {
     if (!isEditing) return;
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ["images"],
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.5,
@@ -56,11 +102,10 @@ export default function Profile() {
   };
 
   const updatePhoto = async (uri: string) => {
-    if (!auth.currentUser) return; // Use auth.currentUser directly
+    if (!auth.currentUser) return;
     setLoading(true);
     try {
       await updateProfile(auth.currentUser, { photoURL: uri });
-      // Update local state to show change immediately
       setUser({ ...auth.currentUser, photoURL: uri });
       Alert.alert("Success", "Profile photo updated!");
     } catch (error: any) {
@@ -71,32 +116,25 @@ export default function Profile() {
   };
 
   const removePhoto = async () => {
-    if (!auth.currentUser) return; // Use auth.currentUser directly
-
-    Alert.alert(
-      "Remove Photo",
-      "Are you sure you want to remove your profile picture?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Remove",
-          style: "destructive",
-          onPress: async () => {
-            setLoading(true);
-            try {
-              // Passing an empty string removes the photo in Firebase
-              await updateProfile(auth.currentUser!, { photoURL: "" });
-              // Update local state
-              setUser({ ...auth.currentUser, photoURL: "" });
-            } catch (error: any) {
-              Alert.alert("Error", error.message);
-            } finally {
-              setLoading(false);
-            }
-          },
+    if (!auth.currentUser) return;
+    Alert.alert("Remove Photo", "Are you sure?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Remove",
+        style: "destructive",
+        onPress: async () => {
+          setLoading(true);
+          try {
+            await updateProfile(auth.currentUser!, { photoURL: "" });
+            setUser({ ...auth.currentUser, photoURL: "" });
+          } catch (error: any) {
+            Alert.alert("Error", error.message);
+          } finally {
+            setLoading(false);
+          }
         },
-      ],
-    );
+      },
+    ]);
   };
 
   const toggleEditMode = async () => {
@@ -105,7 +143,7 @@ export default function Profile() {
   };
 
   const saveProfile = async () => {
-    if (!auth.currentUser) return; // Use auth.currentUser directly
+    if (!auth.currentUser) return;
     setLoading(true);
     try {
       await updateProfile(auth.currentUser, { displayName: displayName });
@@ -117,7 +155,6 @@ export default function Profile() {
         },
         { merge: true },
       );
-
       setIsEditing(false);
       Alert.alert("Saved", "Profile updated successfully.");
     } catch (error: any) {
@@ -147,31 +184,28 @@ export default function Profile() {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       style={{ flex: 1 }}
     >
-      <ScrollView style={styles.container}>
-        <Text style={styles.headerTitle}>My Profile</Text>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingBottom: 100 }}
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>My Profile</Text>
+          <TouchableOpacity onPress={toggleEditMode} style={styles.editBtn}>
+            {loading ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.editBtnText}>
+                {isEditing ? "Save Done" : "Edit Profile"}
+              </Text>
+            )}
+          </TouchableOpacity>
+        </View>
 
+        {/* Main Card */}
         <View style={styles.card}>
-          {/* Header with EDIT / DONE Buttons */}
-          <View style={styles.cardHeader}>
-            <View style={{ flex: 1 }} />
-            <TouchableOpacity onPress={toggleEditMode} style={styles.textBtn}>
-              {loading ? (
-                <ActivityIndicator size="small" color="#111827" />
-              ) : (
-                <Text
-                  style={[
-                    styles.btnText,
-                    isEditing ? { color: "#059669" } : { color: "#2563eb" },
-                  ]}
-                >
-                  {isEditing ? "Done" : "Edit"}
-                </Text>
-              )}
-            </TouchableOpacity>
-          </View>
-
-          {/* Profile Picture Section */}
-          <View style={styles.avatarContainer}>
+          {/* Avatar Section */}
+          <View style={styles.avatarSection}>
             <TouchableOpacity
               onPress={pickImage}
               disabled={!isEditing}
@@ -184,81 +218,107 @@ export default function Profile() {
                   <Ionicons name="person" size={40} color="#9ca3af" />
                 </View>
               )}
-
               {isEditing && (
-                <View style={styles.editIcon}>
+                <View style={styles.cameraIcon}>
                   <Ionicons name="camera" size={16} color="#fff" />
                 </View>
               )}
             </TouchableOpacity>
 
-            {/* Helper Text and REMOVE Button */}
-            {isEditing && (
-              <View style={{ alignItems: "center", marginTop: 10 }}>
-                <Text style={styles.changePhotoText}>Tap photo to change</Text>
-
-                {/* Only show Remove button if a photo actually exists */}
-                {user?.photoURL ? (
-                  <TouchableOpacity
-                    onPress={removePhoto}
-                    style={styles.removeBtn}
-                  >
-                    <Text style={styles.removeBtnText}>Remove Photo</Text>
-                  </TouchableOpacity>
-                ) : null}
-              </View>
+            {isEditing && user?.photoURL && (
+              <TouchableOpacity
+                onPress={removePhoto}
+                style={styles.removeTextBtn}
+              >
+                <Text
+                  style={{ color: "#ef4444", fontSize: 12, fontWeight: "600" }}
+                >
+                  Remove Photo
+                </Text>
+              </TouchableOpacity>
             )}
+
+            {/* Level Badge */}
+            <View style={[styles.levelBadge, { backgroundColor: level.color }]}>
+              <Ionicons name="trophy" size={12} color="#fff" />
+              <Text style={styles.levelText}>{level.title}</Text>
+            </View>
           </View>
 
-          <Text style={styles.emailText}>{user?.email}</Text>
+          {/* Productivity Stats Row */}
+          <View style={styles.statsRow}>
+            <View style={styles.statBox}>
+              <Text style={styles.statNumber}>{completedCount}</Text>
+              <Text style={styles.statLabel}>Completed</Text>
+            </View>
+            <View style={styles.dividerVertical} />
+            <View style={styles.statBox}>
+              <Text style={styles.statNumber}>{pendingCount}</Text>
+              <Text style={styles.statLabel}>Pending</Text>
+            </View>
+            <View style={styles.dividerVertical} />
+            <View style={styles.statBox}>
+              <Text style={styles.statNumber}>{completedCount * 25}m</Text>
+              <Text style={styles.statLabel}>Focus Time</Text>
+            </View>
+          </View>
+        </View>
 
-          {/* Input Fields */}
+        {/* Info Form */}
+        <View style={styles.sectionTitleRow}>
+          <Text style={styles.sectionTitle}>Account Details</Text>
+        </View>
+
+        <View style={styles.card}>
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Display Name</Text>
             <TextInput
-              style={[
-                styles.input,
-                isEditing ? styles.inputEditable : styles.inputReadonly,
-              ]}
+              style={[styles.input, isEditing ? styles.inputEditable : null]}
               value={displayName}
               onChangeText={setDisplayName}
-              placeholder="Enter your name"
-              placeholderTextColor="#9ca3af"
+              placeholder="Your Name"
               editable={isEditing}
             />
           </View>
 
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>My Tagline</Text>
+            <Text style={styles.label}>Email Address</Text>
             <TextInput
-              style={[
-                styles.input,
-                isEditing ? styles.inputEditable : styles.inputReadonly,
-              ]}
+              style={[styles.input, { color: "#6b7280" }]}
+              value={user?.email}
+              editable={false}
+            />
+          </View>
+
+          <View style={[styles.inputGroup, { borderBottomWidth: 0 }]}>
+            <Text style={styles.label}>Productivity Mantra</Text>
+            <TextInput
+              style={[styles.input, isEditing ? styles.inputEditable : null]}
               value={tagline}
               onChangeText={setTagline}
-              placeholder="e.g. Let's be productive."
-              placeholderTextColor="#9ca3af"
+              placeholder="e.g. Stay Focused."
               editable={isEditing}
             />
           </View>
         </View>
 
-        {/* Action Buttons */}
+        {/* Actions */}
+        <View style={styles.sectionTitleRow}>
+          <Text style={styles.sectionTitle}>Settings</Text>
+        </View>
+
         <View style={styles.card}>
           <TouchableOpacity
             style={styles.actionRow}
             onPress={handlePasswordReset}
           >
-            <View style={styles.iconBox}>
-              <Ionicons name="key-outline" size={20} color="#111827" />
+            <View style={[styles.iconBox, { backgroundColor: "#eff6ff" }]}>
+              <Ionicons name="key-outline" size={20} color="#2563eb" />
             </View>
             <Text style={styles.actionText}>Reset Password</Text>
             <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
           </TouchableOpacity>
-
           <View style={styles.divider} />
-
           <TouchableOpacity style={styles.actionRow} onPress={handleLogout}>
             <View style={[styles.iconBox, { backgroundColor: "#fee2e2" }]}>
               <Ionicons name="log-out-outline" size={20} color="#dc2626" />
@@ -275,49 +335,44 @@ export default function Profile() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f9fafb", padding: 20 },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: "bold",
-    color: "#111827",
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 20,
     marginTop: 30,
   },
+  headerTitle: { fontSize: 28, fontWeight: "bold", color: "#111827" },
+  editBtn: {
+    backgroundColor: "#111827",
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+  },
+  editBtnText: { color: "#fff", fontWeight: "600", fontSize: 14 },
   card: {
     backgroundColor: "#fff",
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 20,
     marginBottom: 20,
     shadowColor: "#000",
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.03,
     shadowRadius: 10,
     elevation: 2,
   },
-  cardHeader: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    marginBottom: -10,
-    zIndex: 10,
-  },
-
-  textBtn: { paddingVertical: 5, paddingHorizontal: 10 },
-  btnText: { fontSize: 16, fontWeight: "600" },
-
-  avatarContainer: { alignItems: "center", marginBottom: 15, marginTop: 0 },
+  avatarSection: { alignItems: "center", marginBottom: 20 },
   avatar: { width: 100, height: 100, borderRadius: 50 },
   avatarPlaceholder: {
     width: 100,
     height: 100,
     borderRadius: 50,
-    backgroundColor: "#e5e7eb",
+    backgroundColor: "#f3f4f6",
     justifyContent: "center",
     alignItems: "center",
-    borderWidth: 2,
-    borderColor: "#fff",
   },
-
-  editIcon: {
+  cameraIcon: {
     position: "absolute",
-    bottom: 35,
+    bottom: 0,
     right: 0,
     backgroundColor: "#111827",
     padding: 8,
@@ -325,64 +380,65 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: "#fff",
   },
-
-  changePhotoText: { fontSize: 12, color: "#6b7280", fontWeight: "500" },
-  removeBtn: {
-    marginTop: 8,
-    paddingHorizontal: 10,
+  removeTextBtn: { marginTop: 10 },
+  levelBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
     paddingVertical: 4,
-    backgroundColor: "#fee2e2",
-    borderRadius: 8,
+    borderRadius: 12,
+    marginTop: 15,
+    gap: 5,
   },
-  removeBtnText: { fontSize: 12, color: "#dc2626", fontWeight: "700" },
-
-  emailText: {
-    textAlign: "center",
-    color: "#6b7280",
-    marginBottom: 25,
-    fontSize: 14,
-    marginTop: 10,
-  },
-  inputGroup: { marginBottom: 20 },
-  label: {
+  levelText: {
+    color: "#fff",
+    fontWeight: "bold",
     fontSize: 12,
-    fontWeight: "600",
+    textTransform: "uppercase",
+  },
+  statsRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    borderTopWidth: 1,
+    borderTopColor: "#f3f4f6",
+    paddingTop: 20,
+  },
+  statBox: { alignItems: "center" },
+  statNumber: { fontSize: 20, fontWeight: "bold", color: "#111827" },
+  statLabel: { fontSize: 12, color: "#6b7280", marginTop: 2 },
+  dividerVertical: { width: 1, backgroundColor: "#f3f4f6", height: "100%" },
+  sectionTitleRow: { marginBottom: 10, paddingHorizontal: 5 },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: "700",
     color: "#6b7280",
-    marginBottom: 6,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
-  input: {
-    fontSize: 16,
-    color: "#111827",
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+  inputGroup: {
+    marginBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+    paddingBottom: 15,
   },
+  label: { fontSize: 12, fontWeight: "600", color: "#6b7280", marginBottom: 6 },
+  input: { fontSize: 16, color: "#111827", paddingVertical: 5 },
   inputEditable: {
     backgroundColor: "#f9fafb",
+    paddingHorizontal: 10,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "#e5e7eb",
   },
-  inputReadonly: {
-    backgroundColor: "transparent",
-    borderWidth: 0,
-    paddingHorizontal: 0,
-  },
-  actionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 12,
-  },
+  actionRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8 },
   iconBox: {
     width: 36,
     height: 36,
     borderRadius: 10,
-    backgroundColor: "#f3f4f6",
     justifyContent: "center",
     alignItems: "center",
     marginRight: 15,
   },
   actionText: { flex: 1, fontSize: 16, fontWeight: "500", color: "#111827" },
-  divider: { height: 1, backgroundColor: "#f3f4f6", marginVertical: 5 },
+  divider: { height: 1, backgroundColor: "#f3f4f6", marginVertical: 10 },
 });

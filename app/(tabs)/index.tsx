@@ -1,13 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { LinearGradient } from "expo-linear-gradient";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
+import { onAuthStateChanged } from "firebase/auth";
 import {
-  createUserWithEmailAndPassword,
-  onAuthStateChanged,
-  signInWithEmailAndPassword,
-} from "firebase/auth";
-import {
+  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -20,6 +17,7 @@ import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -30,55 +28,56 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  Vibration,
+  View
 } from "react-native";
 import { auth, db } from "../../firebaseConfig";
 
-// --- FIX 1: "as any" shuts down the TypeScript error completely ---
+// --- CONFIG ---
 Notifications.setNotificationHandler({
   handleNotification: async () =>
     ({
-      shouldShowAlert: true,
+      shouldShowBanner: true, // FIXED: Replaced shouldShowAlert
+      shouldShowList: true, // FIXED: Replaced shouldShowAlert
       shouldPlaySound: true,
       shouldSetBadge: false,
+      priority: Notifications.AndroidNotificationPriority.HIGH,
     }) as any,
 });
 
-interface Task {
+// --- TYPES ---
+interface Item {
   id: string;
+  type: "task" | "note";
   title: string;
   description?: string;
   category: string;
   priority: "High" | "Medium" | "Low";
-  customColor?: string;
   targetDate: string;
   status: string;
   userId: string;
   startTime?: string;
-  endTime?: string;
   createdAt: any;
 }
-
-const STORAGE_KEY = "@zenith_tasks_cache";
 
 export default function Index() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
+  const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tagline, setTagline] = useState("Let's be productive.");
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [quickInput, setQuickInput] = useState("");
 
-  // Auth State
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isLoginMode, setIsLoginMode] = useState(true);
-  const [authLoading, setAuthLoading] = useState(false);
+  // UI States
+  const [activeTab, setActiveTab] = useState<"Tasks" | "Notes">("Tasks");
+  const [selectedDate, setSelectedDate] = useState(new Date());
 
-  // Modal State
-  const [alarmModalVisible, setAlarmModalVisible] = useState(false);
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  // Focus Mode
+  const [focusModalVisible, setFocusModalVisible] = useState(false);
+  const [focusItem, setFocusItem] = useState<Item | null>(null);
+  const [timerSeconds, setTimerSeconds] = useState(25 * 60);
+  const [isActive, setIsActive] = useState(false);
 
-  // --- FIX 2: Ensure Channel exists for Android ---
+  // --- 1. SETUP & DATA ---
   useEffect(() => {
     if (Platform.OS === "android") {
       Notifications.setNotificationChannelAsync("default", {
@@ -90,696 +89,561 @@ export default function Index() {
     }
   }, []);
 
-  const handleAuth = async () => {
-    if (!email || !password)
-      return Alert.alert("Error", "Please fill in all fields");
-    setAuthLoading(true);
-    try {
-      if (isLoginMode) {
-        await signInWithEmailAndPassword(auth, email, password);
-      } else {
-        await createUserWithEmailAndPassword(auth, email, password);
-      }
-    } catch (e: any) {
-      Alert.alert("Authentication Failed", e.message);
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const formatTime = (isoString?: string) => {
-    if (!isoString) return "";
-    return new Date(isoString).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
-
-  const saveTasksLocally = async (newTasks: Task[]) => {
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newTasks));
-    } catch (e) {}
-  };
-
-  const loadTasksLocally = async () => {
-    try {
-      const jsonValue = await AsyncStorage.getItem(STORAGE_KEY);
-      if (jsonValue != null) setTasks(JSON.parse(jsonValue));
-    } catch (e) {}
-  };
-
-  const getPriorityColor = (p: string) => {
-    switch (p) {
-      case "High":
-        return "#dc2626";
-      case "Medium":
-        return "#d97706";
-      case "Low":
-        return "#2563eb";
-      default:
-        return "#4b5563";
-    }
-  };
-
-  const getDayLabel = (dateString: string) => {
-    if (!dateString) return "Inbox";
-    const d = new Date(dateString);
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const dStr = d.toDateString();
-    const tStr = today.toDateString();
-    const tomStr = tomorrow.toDateString();
-    if (dStr === tStr) return "Today";
-    if (dStr === tomStr) return "Tomorrow";
-    return d.toLocaleDateString("en-US", {
-      weekday: "long",
-      month: "short",
-      day: "numeric",
-    });
-  };
-
-  const groupedTasks = tasks.reduce((acc: any, task) => {
-    const dateObj = new Date(task.targetDate);
-    const key = task.targetDate ? dateObj.toISOString().split("T")[0] : "Inbox";
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(task);
-    return acc;
-  }, {});
-  const sortedDates = Object.keys(groupedTasks).sort();
-
   useEffect(() => {
-    async function requestPermissions() {
-      await Notifications.requestPermissionsAsync();
-    }
-    requestPermissions();
-  }, []);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
-      if (!currentUser) {
-        setTasks([]);
-        AsyncStorage.removeItem(STORAGE_KEY);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (!u) {
+        setItems([]);
+        setLoading(false);
       }
     });
     return unsubscribe;
   }, []);
 
   useEffect(() => {
-    loadTasksLocally();
-  }, []);
-
-  useEffect(() => {
     if (!user) return;
     const q = query(collection(db, "tasks"), where("userId", "==", user.uid));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const taskList: Task[] = [];
-      snapshot.forEach((document) => {
-        const data = document.data();
-        taskList.push({
-          id: document.id,
-          title: data.title,
-          description: data.description,
-          category: data.category,
-          priority: data.priority || "Medium",
-          customColor: data.customColor,
-          targetDate: data.targetDate || new Date().toISOString(),
-          status: data.status,
-          userId: data.userId,
-          startTime: data.startTime,
-          endTime: data.endTime,
-          createdAt: data.createdAt,
-        });
+    const unsub = onSnapshot(q, (snapshot) => {
+      const list: Item[] = [];
+      snapshot.forEach((doc) => {
+        const d = doc.data();
+        list.push({ id: doc.id, ...d } as Item);
       });
-      taskList.sort((a, b) => {
-        const dateA = new Date(a.targetDate).getTime();
-        const dateB = new Date(b.targetDate).getTime();
-        if (dateA !== dateB) return dateA - dateB;
-        const timeA = a.startTime ? new Date(a.startTime).getTime() : 0;
-        const timeB = b.startTime ? new Date(b.startTime).getTime() : 0;
-        return timeA - timeB;
-      });
-      setTasks(taskList);
-      saveTasksLocally(taskList);
+      setItems(list);
+      setLoading(false);
     });
-    return () => unsubscribe();
+    return () => unsub();
   }, [user]);
 
-  useEffect(() => {
-    if (!user) return;
-    const unsubUser = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
-      if (docSnap.exists() && docSnap.data().tagline)
-        setTagline(docSnap.data().tagline);
-    });
-    return () => unsubUser();
-  }, [user]);
+  // --- 2. LOGIC: BRAIN DUMP ---
+  const handleBrainDump = async () => {
+    if (!quickInput.trim()) return;
+    if (!user)
+      return Alert.alert("Login Required", "Please login to save items.");
 
-  const openAlarmOptions = (task: Task) => {
-    if (!task.startTime)
-      return Alert.alert("No Time", "This task has no start time.");
-    setSelectedTask(task);
-    setAlarmModalVisible(true);
-  };
-
-  // --- FIX 3: Robust Alarm Logic (The Solution) ---
-  const scheduleAlarm = async (minutesBefore: number) => {
-    if (!selectedTask || !selectedTask.startTime) return;
-    setAlarmModalVisible(false);
-
-    const taskTime = new Date(selectedTask.startTime);
-    const triggerDate = new Date(taskTime.getTime() - minutesBefore * 60000);
-    const now = new Date();
-
-    if (triggerDate <= now) {
-      return Alert.alert(
-        "Too Late",
-        "That time has already passed! Choose a different option.",
-      );
-    }
-
-    // Calculate seconds
-    const secondsUntilAlarm = Math.floor(
-      (triggerDate.getTime() - now.getTime()) / 1000,
-    );
-    const safeSeconds = Math.max(secondsUntilAlarm, 2);
+    const text = quickInput.trim();
+    const isNote =
+      text.toLowerCase().startsWith("note:") || activeTab === "Notes";
+    const finalTitle = isNote ? text.replace(/^note:\s*/i, "") : text;
 
     try {
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title:
-            minutesBefore === 0
-              ? "⏰ It's time!"
-              : `⏰ Upcoming: ${selectedTask.title}`,
-          body:
-            minutesBefore === 0
-              ? `Start working on: ${selectedTask.title}`
-              : `Starting in ${minutesBefore} minutes. Get ready!`,
-          sound: true,
-          // We use 'as any' here to avoid TypeScript issues with 'priority'
-          priority: Notifications.AndroidNotificationPriority.HIGH,
-        } as any,
-
-        // --- THE KEY FIX ---
-        // We FORCE the channelId into the trigger.
-        // We cast 'as any' so TypeScript doesn't block us.
-        // This solves the "Trigger needs channelId" error on Android.
-        trigger: {
-          seconds: safeSeconds,
-          channelId: "default",
-          repeats: false,
-        } as any,
+      await addDoc(collection(db, "tasks"), {
+        title: finalTitle,
+        type: isNote ? "note" : "task",
+        status: "Pending",
+        priority: "Medium",
+        category: "Inbox",
+        targetDate: selectedDate.toISOString(),
+        userId: user.uid,
+        createdAt: new Date().toISOString(),
+        startTime: new Date().toISOString(),
       });
-
-      const timeMsg =
-        minutesBefore === 0 ? "at start time" : `${minutesBefore} min before`;
-      Alert.alert("Alarm Set", `We'll notify you ${timeMsg}.`);
+      setQuickInput("");
+      Vibration.vibrate(20);
     } catch (e: any) {
-      console.log(e);
-      Alert.alert("Error", "Could not set alarm: " + e.message);
+      Alert.alert("Error", e.message);
     }
   };
 
   const toggleStatus = async (id: string, current: string) => {
-    try {
-      const newStatus = current === "Pending" ? "Completed" : "Pending";
-      await updateDoc(doc(db, "tasks", id), { status: newStatus });
-    } catch (e) {}
+    const newStatus = current === "Pending" ? "Completed" : "Pending";
+    await updateDoc(doc(db, "tasks", id), { status: newStatus });
   };
 
-  const deleteTask = (id: string) => {
-    Alert.alert("Delete", "Are you sure?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: () => deleteDoc(doc(db, "tasks", id)),
-      },
-    ]);
+  // --- 3. RENDERING HELPERS ---
+  const getWeekDates = () => {
+    const dates = [];
+    const start = new Date();
+    start.setDate(start.getDate() - 2);
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      dates.push(d);
+    }
+    return dates;
   };
 
+  const filteredItems = items.filter((i) => {
+    const typeMatch =
+      activeTab === "Tasks" ? i.type !== "note" : i.type === "note";
+    const dateMatch =
+      new Date(i.targetDate).toDateString() === selectedDate.toDateString();
+    return typeMatch && (activeTab === "Notes" ? true : dateMatch);
+  });
+
+  filteredItems.sort((a, b) => (a.priority === "High" ? -1 : 1));
+
+  const stats = {
+    pending: items.filter((i) => i.status === "Pending" && i.type !== "note")
+      .length,
+    completed: items.filter((i) => i.status === "Completed").length,
+    notes: items.filter((i) => i.type === "note").length,
+  };
+
+  // --- RENDER ---
   if (loading)
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#111827" />
+        <ActivityIndicator size="large" color="#000" />
       </View>
     );
-
-  if (!user) {
+  if (!user)
     return (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={styles.authContainer}
-      >
-        <View style={styles.authBox}>
-          <Text style={styles.authTitle}>Zenith</Text>
-          <Text style={styles.authSubtitle}>
-            {isLoginMode ? "Welcome back!" : "Create your account"}
-          </Text>
-          <TextInput
-            style={styles.authInput}
-            placeholder="Email Address"
-            placeholderTextColor="#9ca3af"
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-          />
-          <TextInput
-            style={styles.authInput}
-            placeholder="Password"
-            placeholderTextColor="#9ca3af"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-          />
-          <TouchableOpacity style={styles.authButton} onPress={handleAuth}>
-            {authLoading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.authButtonText}>
-                {isLoginMode ? "Sign In" : "Sign Up"}
-              </Text>
-            )}
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => setIsLoginMode(!isLoginMode)}
-            style={{ marginTop: 15 }}
-          >
-            <Text style={styles.switchText}>
-              {isLoginMode
-                ? "Don't have an account? Sign Up"
-                : "Already have an account? Log In"}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </KeyboardAvoidingView>
+      <View style={styles.center}>
+        <Text>Please login via Profile</Text>
+      </View>
     );
-  }
-
-  const pendingCount = tasks.filter((t) => t.status === "Pending").length;
-  const progress = tasks.length
-    ? Math.round(((tasks.length - pendingCount) / tasks.length) * 100)
-    : 0;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        <View style={styles.header}>
+    <SafeAreaView style={styles.container}>
+      <View style={styles.content}>
+        {/* HEADER */}
+        <View style={styles.headerRow}>
           <View>
-            <Text style={styles.greeting}>Hi, {user.displayName || "Deb"}</Text>
-            <Text style={styles.subGreeting}>{tagline}</Text>
+            <Text style={styles.dateText}>
+              {new Date().toLocaleDateString("en-US", {
+                weekday: "long",
+                month: "short",
+                day: "numeric",
+              })}
+            </Text>
+            <Text style={styles.greeting}>
+              Hello, {user.displayName?.split(" ")[0] || "Deb"} 👋
+            </Text>
           </View>
           <TouchableOpacity onPress={() => router.push("/profile")}>
-            {user.photoURL ? (
-              <Image
-                source={{ uri: user.photoURL }}
-                style={styles.headerAvatar}
-              />
-            ) : (
-              <View style={styles.headerAvatarPlaceholder}>
-                <Ionicons name="person" size={20} color="#fff" />
-              </View>
-            )}
+            <Image
+              source={{
+                uri: user.photoURL || "https://via.placeholder.com/150",
+              }}
+              style={styles.avatar}
+            />
           </TouchableOpacity>
         </View>
 
-        <View style={styles.statsRow}>
-          <View style={styles.statCard}>
-            <Text style={styles.statLabel}>Progress</Text>
-            <Text style={styles.statValue}>{progress}%</Text>
+        {/* BENTO GRID */}
+        <View style={styles.bentoGrid}>
+          <View
+            style={[
+              styles.bentoCard,
+              { backgroundColor: "#111827", flex: 1.2 },
+            ]}
+          >
+            <View style={styles.iconCircle}>
+              <Ionicons name="flame" size={20} color="#fff" />
+            </View>
+            <Text style={styles.bentoNum}>{stats.completed}</Text>
+            <Text style={styles.bentoLabel}>Tasks Crushed</Text>
           </View>
-          <View style={styles.statCard}>
-            <Text style={styles.statLabel}>Pending</Text>
-            <Text style={styles.statValue}>{pendingCount}</Text>
+          <View
+            style={[
+              styles.bentoCard,
+              {
+                backgroundColor: "#fff",
+                flex: 1,
+                borderWidth: 1,
+                borderColor: "#e5e7eb",
+              },
+            ]}
+          >
+            <Ionicons name="documents-outline" size={24} color="#111827" />
+            <Text style={[styles.bentoNum, { color: "#111827" }]}>
+              {stats.notes}
+            </Text>
+            <Text style={styles.bentoLabel}>Ideas Saved</Text>
           </View>
         </View>
 
-        <ScrollView contentContainerStyle={{ paddingBottom: 100 }}>
-          {sortedDates.length === 0 ? (
+        {/* HORIZONTAL CALENDAR */}
+        <View style={{ height: 90 }}>
+          <FlatList
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            data={getWeekDates()}
+            keyExtractor={(item) => item.toISOString()}
+            contentContainerStyle={{ paddingHorizontal: 5, gap: 10 }}
+            renderItem={({ item }) => {
+              const isSelected =
+                item.toDateString() === selectedDate.toDateString();
+              return (
+                <TouchableOpacity
+                  onPress={() => setSelectedDate(item)}
+                  style={[styles.datePill, isSelected && styles.datePillActive]}
+                >
+                  <Text
+                    style={[styles.dayText, isSelected && { color: "#fff" }]}
+                  >
+                    {item.toLocaleDateString("en-US", { weekday: "short" })}
+                  </Text>
+                  <Text
+                    style={[styles.dateNum, isSelected && { color: "#fff" }]}
+                  >
+                    {item.getDate()}
+                  </Text>
+                </TouchableOpacity>
+              );
+            }}
+          />
+        </View>
+
+        {/* TAB SWITCHER */}
+        <View style={styles.tabContainer}>
+          <TouchableOpacity
+            onPress={() => setActiveTab("Tasks")}
+            style={[styles.tab, activeTab === "Tasks" && styles.tabActive]}
+          >
             <Text
-              style={{ textAlign: "center", marginTop: 40, color: "#9ca3af" }}
+              style={[
+                styles.tabText,
+                activeTab === "Tasks" && styles.tabTextActive,
+              ]}
             >
-              No tasks yet. Tap + to add one!
+              My Tasks
             </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setActiveTab("Notes")}
+            style={[styles.tab, activeTab === "Notes" && styles.tabActive]}
+          >
+            <Text
+              style={[
+                styles.tabText,
+                activeTab === "Notes" && styles.tabTextActive,
+              ]}
+            >
+              Brain Notes
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* LIST AREA */}
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingBottom: 100 }}
+        >
+          {filteredItems.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Ionicons name="sparkles-outline" size={40} color="#d1d5db" />
+              <Text style={{ color: "#9ca3af", marginTop: 10 }}>
+                Nothing here. Brain dump below! 👇
+              </Text>
+            </View>
           ) : (
-            sortedDates.map((dateKey) => (
-              <View key={dateKey} style={{ marginBottom: 20 }}>
-                <Text style={styles.dateHeader}>{getDayLabel(dateKey)}</Text>
-                {groupedTasks[dateKey].map((task: Task) => {
-                  const isDone = task.status === "Completed";
-                  const bgColor = task.customColor || "#ffffff";
-                  const priColor = getPriorityColor(task.priority);
-                  return (
-                    <View
-                      key={task.id}
+            filteredItems.map((item, index) => {
+              const isHero =
+                index === 0 &&
+                item.priority === "High" &&
+                item.status === "Pending" &&
+                activeTab === "Tasks";
+
+              if (isHero) {
+                return (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={styles.heroCard}
+                    onPress={() => {
+                      setFocusItem(item);
+                      setFocusModalVisible(true);
+                    }}
+                  >
+                    <LinearGradient
+                      colors={["#1e1b4b", "#312e81"]}
+                      style={styles.heroGradient}
+                    >
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          justifyContent: "space-between",
+                        }}
+                      >
+                        <View style={styles.priorityBadge}>
+                          <Text style={styles.priorityText}>
+                            🔥 TOP PRIORITY
+                          </Text>
+                        </View>
+                        <Ionicons name="play-circle" size={32} color="#fff" />
+                      </View>
+                      <Text style={styles.heroTitle}>{item.title}</Text>
+                      <Text style={styles.heroSubtitle}>
+                        Tap to enter Hyper-Focus mode
+                      </Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                );
+              }
+
+              return (
+                <View key={item.id} style={styles.itemRow}>
+                  {activeTab === "Tasks" && (
+                    <TouchableOpacity
+                      onPress={() => toggleStatus(item.id, item.status)}
                       style={[
-                        styles.taskCard,
-                        {
-                          backgroundColor: isDone ? "#f9fafb" : bgColor,
-                          borderColor: "#e5e7eb",
+                        styles.checkCircle,
+                        item.status === "Completed" && {
+                          backgroundColor: "#10b981",
+                          borderColor: "#10b981",
                         },
-                        isDone && { opacity: 0.6 },
                       ]}
                     >
-                      <TouchableOpacity
-                        style={[
-                          styles.circle,
-                          isDone && {
-                            backgroundColor: "#111827",
-                            borderColor: "#111827",
-                          },
-                        ]}
-                        onPress={() => toggleStatus(task.id, task.status)}
-                        activeOpacity={0.6}
-                      >
-                        {isDone && (
-                          <Ionicons name="checkmark" size={14} color="#fff" />
-                        )}
-                      </TouchableOpacity>
-                      <View style={{ flex: 1 }}>
-                        <View
-                          style={{
-                            flexDirection: "row",
-                            justifyContent: "space-between",
-                            alignItems: "flex-start",
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.taskTitle,
-                              isDone && {
-                                textDecorationLine: "line-through",
-                                color: "#9ca3af",
-                              },
-                            ]}
-                          >
-                            {task.title}
-                          </Text>
-                        </View>
-                        {task.startTime && (
-                          <View style={styles.timeRow}>
-                            <Ionicons
-                              name="time-outline"
-                              size={12}
-                              color="#6b7280"
-                            />
-                            <Text style={styles.timeText}>
-                              {formatTime(task.startTime)} -{" "}
-                              {formatTime(task.endTime)}
-                            </Text>
-                          </View>
-                        )}
-                        {task.description ? (
-                          <Text style={styles.taskDesc} numberOfLines={2}>
-                            {task.description}
-                          </Text>
-                        ) : null}
-                        <View style={styles.metaRow}>
-                          <Text
-                            style={{
-                              fontSize: 12,
-                              fontWeight: "700",
-                              color: priColor,
-                              marginRight: 8,
-                            }}
-                          >
-                            {task.priority}
-                          </Text>
-                          <View style={styles.catBadge}>
-                            <Text
-                              style={{
-                                fontSize: 10,
-                                fontWeight: "600",
-                                color: "#4b5563",
-                              }}
-                            >
-                              {task.category}
-                            </Text>
-                          </View>
-                        </View>
-                      </View>
-                      <View style={{ alignItems: "center", gap: 5 }}>
-                        <TouchableOpacity
-                          onPress={() => openAlarmOptions(task)}
-                          style={styles.iconBtn}
-                        >
-                          <Ionicons
-                            name="notifications-outline"
-                            size={20}
-                            color="#111827"
-                          />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={() => deleteTask(task.id)}
-                          style={styles.iconBtn}
-                        >
-                          <Ionicons
-                            name="trash-outline"
-                            size={20}
-                            color="#ef4444"
-                          />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            ))
+                      {item.status === "Completed" && (
+                        <Ionicons name="checkmark" size={14} color="#fff" />
+                      )}
+                    </TouchableOpacity>
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[
+                        styles.itemTitle,
+                        item.status === "Completed" && {
+                          textDecorationLine: "line-through",
+                          color: "#9ca3af",
+                        },
+                      ]}
+                    >
+                      {item.title}
+                    </Text>
+                    {item.description ? (
+                      <Text style={styles.itemDesc} numberOfLines={1}>
+                        {item.description}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => deleteDoc(doc(db, "tasks", item.id))}
+                    style={{ padding: 5 }}
+                  >
+                    <Ionicons name="trash-outline" size={18} color="#ef4444" />
+                  </TouchableOpacity>
+                </View>
+              );
+            })
           )}
         </ScrollView>
-      </View>
 
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={alarmModalVisible}
-        onRequestClose={() => setAlarmModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Set Reminder</Text>
-            <Text style={styles.modalSubtitle}>
-              When do you want to be notified?
-            </Text>
-
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={() => scheduleAlarm(0)}
-            >
-              <Text style={styles.optionText}>At time of event</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={() => scheduleAlarm(15)}
-            >
-              <Text style={styles.optionText}>15 minutes before</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={() => scheduleAlarm(30)}
-            >
-              <Text style={styles.optionText}>30 minutes before</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={() => scheduleAlarm(60)}
-            >
-              <Text style={styles.optionText}>1 hour before</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.modalOption,
-                { borderBottomWidth: 0, marginTop: 10 },
-              ]}
-              onPress={() => setAlarmModalVisible(false)}
-            >
-              <Text
-                style={[
-                  styles.optionText,
-                  { color: "#ef4444", fontWeight: "bold" },
-                ]}
-              >
-                Cancel
-              </Text>
+        {/* BRAIN DUMP BAR */}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={10}
+        >
+          <View style={styles.brainDumpBar}>
+            <TextInput
+              style={styles.brainInput}
+              placeholder={
+                activeTab === "Tasks" ? "Add a task..." : "Capture an idea..."
+              }
+              placeholderTextColor="#9ca3af"
+              value={quickInput}
+              onChangeText={setQuickInput}
+              onSubmitEditing={handleBrainDump}
+            />
+            <TouchableOpacity onPress={handleBrainDump} style={styles.sendBtn}>
+              <Ionicons name="arrow-up" size={20} color="#fff" />
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
+      </View>
+
+      {/* FOCUS MODAL */}
+      <Modal
+        animationType="slide"
+        visible={focusModalVisible}
+        onRequestClose={() => setFocusModalVisible(false)}
+      >
+        <SafeAreaView style={styles.focusContainer}>
+          <View style={{ alignItems: "flex-end", padding: 20 }}>
+            <TouchableOpacity onPress={() => setFocusModalVisible(false)}>
+              <Ionicons name="close-circle" size={40} color="#fff" />
+            </TouchableOpacity>
+          </View>
+          <View
+            style={{ flex: 1, justifyContent: "center", alignItems: "center" }}
+          >
+            <Text style={{ color: "#9ca3af", letterSpacing: 2 }}>
+              FOCUS MODE
+            </Text>
+            <Text style={styles.focusTitle}>{focusItem?.title}</Text>
+            <Text style={styles.timer}>
+              {Math.floor(timerSeconds / 60)}:
+              {(timerSeconds % 60).toString().padStart(2, "0")}
+            </Text>
+            <TouchableOpacity
+              onPress={() => setIsActive(!isActive)}
+              style={styles.playBtn}
+            >
+              <Ionicons
+                name={isActive ? "pause" : "play"}
+                size={40}
+                color="#000"
+              />
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );
 }
 
+// --- STYLES ---
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#f9fafb" },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
-  authContainer: {
-    flex: 1,
-    justifyContent: "center",
-    padding: 20,
-    backgroundColor: "#f9fafb",
-  },
-  authBox: {
-    backgroundColor: "#fff",
-    padding: 25,
-    borderRadius: 20,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    elevation: 5,
-  },
-  authTitle: {
-    fontSize: 32,
-    fontWeight: "bold",
-    color: "#111827",
-    textAlign: "center",
-    marginBottom: 5,
-  },
-  authSubtitle: {
-    fontSize: 16,
-    color: "#6b7280",
-    textAlign: "center",
-    marginBottom: 25,
-  },
-  authInput: {
-    backgroundColor: "#f3f4f6",
-    padding: 15,
-    borderRadius: 12,
-    marginBottom: 15,
-    fontSize: 16,
-    color: "#000000",
-  },
-  authButton: {
-    backgroundColor: "#111827",
-    padding: 18,
-    borderRadius: 12,
-    alignItems: "center",
-    marginTop: 5,
-  },
-  authButtonText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
-  switchText: { textAlign: "center", color: "#2563eb", fontWeight: "600" },
-  container: { flex: 1, padding: 20 },
-  header: {
-    marginBottom: 20,
-    marginTop: 10,
+  container: { flex: 1, backgroundColor: "#f9fafb" },
+  content: { flex: 1, padding: 20 },
+  headerRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    marginBottom: 20,
+    marginTop: 10,
   },
-  greeting: { fontSize: 24, fontWeight: "bold", color: "#111827" },
-  subGreeting: { color: "#6b7280", fontSize: 14 },
-  headerAvatar: { width: 40, height: 40, borderRadius: 20 },
-  headerAvatarPlaceholder: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#111827",
+  dateText: {
+    color: "#6b7280",
+    fontSize: 13,
+    textTransform: "uppercase",
+    fontWeight: "600",
+  },
+  greeting: { fontSize: 24, fontWeight: "800", color: "#111827" },
+  avatar: {
+    width: 45,
+    height: 45,
+    borderRadius: 25,
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
+  bentoGrid: { flexDirection: "row", gap: 12, marginBottom: 25, height: 110 },
+  bentoCard: { borderRadius: 20, padding: 15, justifyContent: "space-between" },
+  iconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.2)",
     alignItems: "center",
     justifyContent: "center",
   },
-  statsRow: { flexDirection: "row", gap: 10, marginBottom: 20 },
-  statCard: {
-    flex: 1,
+  bentoNum: { fontSize: 32, fontWeight: "bold", color: "#fff", marginTop: 5 },
+  bentoLabel: { fontSize: 12, color: "#9ca3af", fontWeight: "500" },
+  datePill: {
+    width: 55,
+    height: 75,
+    borderRadius: 28,
     backgroundColor: "#fff",
-    padding: 15,
-    borderRadius: 12,
-    elevation: 2,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#f3f4f6",
   },
-  statLabel: { fontSize: 12, color: "#6b7280", fontWeight: "600" },
-  statValue: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "#111827",
-    marginTop: 4,
+  datePillActive: {
+    backgroundColor: "#111827",
+    borderColor: "#111827",
+    transform: [{ scale: 1.05 }],
   },
-  dateHeader: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#111827",
-    marginBottom: 10,
-    marginTop: 10,
+  dayText: { fontSize: 12, color: "#9ca3af", marginBottom: 4 },
+  dateNum: { fontSize: 18, fontWeight: "700", color: "#111827" },
+  tabContainer: {
+    flexDirection: "row",
+    backgroundColor: "#e5e7eb",
+    borderRadius: 15,
+    padding: 4,
+    marginBottom: 15,
   },
-  taskCard: {
+  tab: { flex: 1, paddingVertical: 8, alignItems: "center", borderRadius: 12 },
+  tabActive: {
+    backgroundColor: "#fff",
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  tabText: { fontSize: 14, fontWeight: "600", color: "#6b7280" },
+  tabTextActive: { color: "#111827" },
+  heroCard: {
+    marginBottom: 15,
+    borderRadius: 24,
+    overflow: "hidden",
+    shadowColor: "#312e81",
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  heroGradient: { padding: 20, height: 160, justifyContent: "space-between" },
+  priorityBadge: {
+    backgroundColor: "rgba(239, 68, 68, 0.2)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    alignSelf: "flex-start",
+  },
+  priorityText: { color: "#fca5a5", fontSize: 10, fontWeight: "800" },
+  heroTitle: { color: "#fff", fontSize: 22, fontWeight: "bold", width: "90%" },
+  heroSubtitle: { color: "#a5b4fc", fontSize: 12 },
+  itemRow: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 14,
+    backgroundColor: "#fff",
+    padding: 16,
     borderRadius: 16,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
-    shadowColor: "#000",
-    shadowOpacity: 0.03,
-    shadowRadius: 3,
-    elevation: 1,
+    borderColor: "#f3f4f6",
   },
-  circle: {
+  checkCircle: {
     width: 24,
     height: 24,
     borderRadius: 12,
     borderWidth: 2,
-    borderColor: "#d1d5db",
+    borderColor: "#e5e7eb",
     marginRight: 12,
     alignItems: "center",
     justifyContent: "center",
   },
-  taskTitle: {
-    fontWeight: "600",
-    fontSize: 16,
-    color: "#111827",
-    marginBottom: 2,
-  },
-  taskDesc: { fontSize: 13, color: "#6b7280", marginBottom: 8, lineHeight: 18 },
-  timeRow: {
+  itemTitle: { fontSize: 16, fontWeight: "600", color: "#1f2937" },
+  itemDesc: { fontSize: 12, color: "#9ca3af", marginTop: 2 },
+  emptyState: { alignItems: "center", marginTop: 50 },
+  brainDumpBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    marginBottom: 6,
-  },
-  timeText: { fontSize: 12, color: "#6b7280", fontWeight: "500" },
-  metaRow: { flexDirection: "row", alignItems: "center", marginTop: 2 },
-  catBadge: {
     backgroundColor: "#fff",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    borderRadius: 30,
+    padding: 5,
+    paddingLeft: 20,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 5,
+    marginBottom: 10,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: "#f3f4f6",
   },
-  iconBtn: { padding: 8 },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "flex-end",
+  brainInput: { flex: 1, height: 50, fontSize: 16, color: "#111827" },
+  sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  modalContent: {
-    backgroundColor: "#fff",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    paddingBottom: 40,
-  },
-  modalTitle: {
-    fontSize: 20,
+  focusContainer: { flex: 1, backgroundColor: "#000" },
+  focusTitle: {
+    color: "#fff",
+    fontSize: 32,
     fontWeight: "bold",
-    color: "#111827",
     textAlign: "center",
-    marginBottom: 5,
+    marginVertical: 40,
+    paddingHorizontal: 20,
   },
-  modalSubtitle: {
-    fontSize: 14,
-    color: "#6b7280",
-    textAlign: "center",
-    marginBottom: 20,
+  timer: {
+    color: "#fff",
+    fontSize: 80,
+    fontWeight: "200",
+    fontVariant: ["tabular-nums"],
+    marginBottom: 50,
   },
-  modalOption: {
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f3f4f6",
+  playBtn: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: "#fff",
+    justifyContent: "center",
     alignItems: "center",
   },
-  optionText: { fontSize: 16, color: "#111827", fontWeight: "500" },
 });
