@@ -1,0 +1,7 @@
+node_modules/
+.expo/
+.git/
+.Trash/
+android/
+ios/
+npm-debug.log
