@@ -2,7 +2,11 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
-import { onAuthStateChanged } from "firebase/auth";
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+} from "firebase/auth";
 import {
   collection,
   deleteDoc,
@@ -17,16 +21,20 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { auth, db } from "../../firebaseConfig";
 
-// --- FORCE FIX: Use 'as any' to silence the strict type checker ---
+// --- FIX 1: "as any" shuts down the TypeScript error completely ---
 Notifications.setNotificationHandler({
   handleNotification: async () =>
     ({
@@ -59,6 +67,45 @@ export default function Index() {
   const [loading, setLoading] = useState(true);
   const [tagline, setTagline] = useState("Let's be productive.");
   const [tasks, setTasks] = useState<Task[]>([]);
+
+  // Auth State
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isLoginMode, setIsLoginMode] = useState(true);
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // Modal State
+  const [alarmModalVisible, setAlarmModalVisible] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+
+  // --- FIX 2: Ensure Channel exists for Android ---
+  useEffect(() => {
+    if (Platform.OS === "android") {
+      Notifications.setNotificationChannelAsync("default", {
+        name: "default",
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: "#FF231F7C",
+      });
+    }
+  }, []);
+
+  const handleAuth = async () => {
+    if (!email || !password)
+      return Alert.alert("Error", "Please fill in all fields");
+    setAuthLoading(true);
+    try {
+      if (isLoginMode) {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        await createUserWithEmailAndPassword(auth, email, password);
+      }
+    } catch (e: any) {
+      Alert.alert("Authentication Failed", e.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
 
   const formatTime = (isoString?: string) => {
     if (!isoString) return "";
@@ -189,33 +236,68 @@ export default function Index() {
     return () => unsubUser();
   }, [user]);
 
-  const scheduleAlarm = async (task: Task) => {
+  const openAlarmOptions = (task: Task) => {
     if (!task.startTime)
       return Alert.alert("No Time", "This task has no start time.");
+    setSelectedTask(task);
+    setAlarmModalVisible(true);
+  };
 
-    const triggerDate = new Date(task.startTime);
+  // --- FIX 3: Robust Alarm Logic (The Solution) ---
+  const scheduleAlarm = async (minutesBefore: number) => {
+    if (!selectedTask || !selectedTask.startTime) return;
+    setAlarmModalVisible(false);
+
+    const taskTime = new Date(selectedTask.startTime);
+    const triggerDate = new Date(taskTime.getTime() - minutesBefore * 60000);
     const now = new Date();
 
-    if (triggerDate < now) {
-      return Alert.alert("Oops", "Cannot set alarm for a time in the past!");
+    if (triggerDate <= now) {
+      return Alert.alert(
+        "Too Late",
+        "That time has already passed! Choose a different option.",
+      );
     }
+
+    // Calculate seconds
+    const secondsUntilAlarm = Math.floor(
+      (triggerDate.getTime() - now.getTime()) / 1000,
+    );
+    const safeSeconds = Math.max(secondsUntilAlarm, 2);
 
     try {
       await Notifications.scheduleNotificationAsync({
         content: {
-          title: "⏰ It's time!",
-          body: `Start working on: ${task.title}`,
+          title:
+            minutesBefore === 0
+              ? "⏰ It's time!"
+              : `⏰ Upcoming: ${selectedTask.title}`,
+          body:
+            minutesBefore === 0
+              ? `Start working on: ${selectedTask.title}`
+              : `Starting in ${minutesBefore} minutes. Get ready!`,
           sound: true,
-        },
-        // --- FORCE FIX: Silence the Date error ---
-        trigger: triggerDate as any,
+          // We use 'as any' here to avoid TypeScript issues with 'priority'
+          priority: Notifications.AndroidNotificationPriority.HIGH,
+        } as any,
+
+        // --- THE KEY FIX ---
+        // We FORCE the channelId into the trigger.
+        // We cast 'as any' so TypeScript doesn't block us.
+        // This solves the "Trigger needs channelId" error on Android.
+        trigger: {
+          seconds: safeSeconds,
+          channelId: "default",
+          repeats: false,
+        } as any,
       });
-      Alert.alert(
-        "Alarm Set",
-        `Notifying you at ${formatTime(task.startTime)}`,
-      );
+
+      const timeMsg =
+        minutesBefore === 0 ? "at start time" : `${minutesBefore} min before`;
+      Alert.alert("Alarm Set", `We'll notify you ${timeMsg}.`);
     } catch (e: any) {
-      Alert.alert("Error", "Could not set alarm. " + e.message);
+      console.log(e);
+      Alert.alert("Error", "Could not set alarm: " + e.message);
     }
   };
 
@@ -246,9 +328,52 @@ export default function Index() {
 
   if (!user) {
     return (
-      <View style={styles.center}>
-        <Text>Please Log In</Text>
-      </View>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={styles.authContainer}
+      >
+        <View style={styles.authBox}>
+          <Text style={styles.authTitle}>Zenith</Text>
+          <Text style={styles.authSubtitle}>
+            {isLoginMode ? "Welcome back!" : "Create your account"}
+          </Text>
+          <TextInput
+            style={styles.authInput}
+            placeholder="Email Address"
+            placeholderTextColor="#9ca3af"
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+          />
+          <TextInput
+            style={styles.authInput}
+            placeholder="Password"
+            placeholderTextColor="#9ca3af"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+          />
+          <TouchableOpacity style={styles.authButton} onPress={handleAuth}>
+            {authLoading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.authButtonText}>
+                {isLoginMode ? "Sign In" : "Sign Up"}
+              </Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setIsLoginMode(!isLoginMode)}
+            style={{ marginTop: 15 }}
+          >
+            <Text style={styles.switchText}>
+              {isLoginMode
+                ? "Don't have an account? Sign Up"
+                : "Already have an account? Log In"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
     );
   }
 
@@ -396,7 +521,7 @@ export default function Index() {
                       </View>
                       <View style={{ alignItems: "center", gap: 5 }}>
                         <TouchableOpacity
-                          onPress={() => scheduleAlarm(task)}
+                          onPress={() => openAlarmOptions(task)}
                           style={styles.iconBtn}
                         >
                           <Ionicons
@@ -424,6 +549,67 @@ export default function Index() {
           )}
         </ScrollView>
       </View>
+
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={alarmModalVisible}
+        onRequestClose={() => setAlarmModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Set Reminder</Text>
+            <Text style={styles.modalSubtitle}>
+              When do you want to be notified?
+            </Text>
+
+            <TouchableOpacity
+              style={styles.modalOption}
+              onPress={() => scheduleAlarm(0)}
+            >
+              <Text style={styles.optionText}>At time of event</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalOption}
+              onPress={() => scheduleAlarm(15)}
+            >
+              <Text style={styles.optionText}>15 minutes before</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalOption}
+              onPress={() => scheduleAlarm(30)}
+            >
+              <Text style={styles.optionText}>30 minutes before</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalOption}
+              onPress={() => scheduleAlarm(60)}
+            >
+              <Text style={styles.optionText}>1 hour before</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.modalOption,
+                { borderBottomWidth: 0, marginTop: 10 },
+              ]}
+              onPress={() => setAlarmModalVisible(false)}
+            >
+              <Text
+                style={[
+                  styles.optionText,
+                  { color: "#ef4444", fontWeight: "bold" },
+                ]}
+              >
+                Cancel
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -431,6 +617,51 @@ export default function Index() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: "#f9fafb" },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
+  authContainer: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 20,
+    backgroundColor: "#f9fafb",
+  },
+  authBox: {
+    backgroundColor: "#fff",
+    padding: 25,
+    borderRadius: 20,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  authTitle: {
+    fontSize: 32,
+    fontWeight: "bold",
+    color: "#111827",
+    textAlign: "center",
+    marginBottom: 5,
+  },
+  authSubtitle: {
+    fontSize: 16,
+    color: "#6b7280",
+    textAlign: "center",
+    marginBottom: 25,
+  },
+  authInput: {
+    backgroundColor: "#f3f4f6",
+    padding: 15,
+    borderRadius: 12,
+    marginBottom: 15,
+    fontSize: 16,
+    color: "#000000",
+  },
+  authButton: {
+    backgroundColor: "#111827",
+    padding: 18,
+    borderRadius: 12,
+    alignItems: "center",
+    marginTop: 5,
+  },
+  authButtonText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  switchText: { textAlign: "center", color: "#2563eb", fontWeight: "600" },
   container: { flex: 1, padding: 20 },
   header: {
     marginBottom: 20,
@@ -519,4 +750,36 @@ const styles = StyleSheet.create({
     borderColor: "#e5e7eb",
   },
   iconBtn: { padding: 8 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  modalContent: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    paddingBottom: 40,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#111827",
+    textAlign: "center",
+    marginBottom: 5,
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: "#6b7280",
+    textAlign: "center",
+    marginBottom: 20,
+  },
+  modalOption: {
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+    alignItems: "center",
+  },
+  optionText: { fontSize: 16, color: "#111827", fontWeight: "500" },
 });
