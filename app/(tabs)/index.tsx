@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Notifications from "expo-notifications";
-import { useRouter } from "expo-router";
+import { useRouter } from "expo-router"; // We use the hook
 import { onAuthStateChanged } from "firebase/auth";
 import {
   collection,
@@ -14,36 +14,29 @@ import {
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  FlatList,
+  Alert,
   Image,
   Modal,
-  Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View
+  Vibration,
+  View,
 } from "react-native";
-import {
-  GestureHandlerRootView,
-  Swipeable,
-} from "react-native-gesture-handler";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { auth, db } from "../../firebaseConfig";
 
-// --- CONFIG ---
 Notifications.setNotificationHandler({
-  handleNotification: async () =>
-    ({
-      shouldShowBanner: true,
-      shouldShowList: true,
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-      priority: Notifications.AndroidNotificationPriority.HIGH,
-    }) as any,
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
 });
 
-// --- TYPES ---
 interface Item {
   id: string;
   type: "task" | "note";
@@ -51,40 +44,24 @@ interface Item {
   description?: string;
   category: string;
   priority: "High" | "Medium" | "Low";
+  customColor?: string;
   targetDate: string;
   status: string;
   userId: string;
   startTime?: string;
+  endTime?: string;
   createdAt: any;
 }
 
 export default function Index() {
-  const router = useRouter();
+  const router = useRouter(); // Initialize Router
   const [user, setUser] = useState<any>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // UI States
   const [activeTab, setActiveTab] = useState<"Tasks" | "Notes">("Tasks");
-  const [selectedDate, setSelectedDate] = useState(new Date());
-
-  // Focus Mode
-  const [focusModalVisible, setFocusModalVisible] = useState(false);
-  const [focusItem, setFocusItem] = useState<Item | null>(null);
-  const [timerSeconds, setTimerSeconds] = useState(25 * 60);
-  const [isActive, setIsActive] = useState(false);
-
-  // --- 1. SETUP & DATA ---
-  useEffect(() => {
-    if (Platform.OS === "android") {
-      Notifications.setNotificationChannelAsync("default", {
-        name: "default",
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 250, 250, 250],
-        lightColor: "#FF231F7C",
-      });
-    }
-  }, []);
+  const [alarmModalVisible, setAlarmModalVisible] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<Item | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -112,90 +89,143 @@ export default function Index() {
     return () => unsub();
   }, [user]);
 
-  // --- 2. ACTIONS ---
+  // --- ACTIONS ---
   const handleAddPress = () => {
-    // Navigate to Add Screen, passing the 'type' (task or note)
+    console.log("Navigating to global /add...");
+    // We moved the file to app/add.tsx, so the route is just "/add"
+    // This breaks it out of the tab navigation logic entirely
+    router.push("/add");
+  };
+
+  const handleEditPress = (item: Item) => {
     router.push({
       pathname: "/add",
-      params: { type: activeTab === "Tasks" ? "task" : "note" },
+      params: {
+        id: item.id,
+        type: item.type,
+        title: item.title,
+        description: item.description,
+        category: item.category,
+        priority: item.priority,
+        targetDate: item.targetDate,
+        startTime: item.startTime,
+        endTime: item.endTime,
+      },
     });
   };
 
   const toggleStatus = async (id: string, current: string) => {
+    Vibration.vibrate(50);
     const newStatus = current === "Pending" ? "Completed" : "Pending";
     await updateDoc(doc(db, "tasks", id), { status: newStatus });
   };
 
   const deleteItem = async (id: string) => {
-    await deleteDoc(doc(db, "tasks", id));
+    Alert.alert("Delete", "Are you sure?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => deleteDoc(doc(db, "tasks", id)),
+      },
+    ]);
   };
 
-  // --- 3. SWIPE ACTIONS ---
-  const renderRightActions = (id: string) => {
-    return (
-      <TouchableOpacity
-        style={styles.deleteAction}
-        onPress={() => deleteItem(id)}
-      >
-        <Ionicons name="trash-outline" size={24} color="#fff" />
-        <Text style={styles.actionText}>Delete</Text>
-      </TouchableOpacity>
-    );
+  const openAlarmOptions = (task: Item) => {
+    if (!task.startTime)
+      return Alert.alert("No Time", "This task has no start time.");
+    setSelectedTask(task);
+    setAlarmModalVisible(true);
   };
 
-  const renderLeftActions = (id: string, status: string) => {
-    return (
-      <TouchableOpacity
-        style={styles.completeAction}
-        onPress={() => toggleStatus(id, status)}
-      >
-        <Ionicons name="checkmark-circle-outline" size={24} color="#fff" />
-        <Text style={styles.actionText}>
-          {status === "Pending" ? "Done" : "Undo"}
-        </Text>
-      </TouchableOpacity>
-    );
-  };
+  const scheduleAlarm = async (minutesBefore: number) => {
+    if (!selectedTask || !selectedTask.startTime) return;
+    setAlarmModalVisible(false);
+    const taskTime = new Date(selectedTask.startTime);
+    const triggerDate = new Date(taskTime.getTime() - minutesBefore * 60000);
+    const now = new Date();
 
-  // --- 4. HELPERS ---
-  const getWeekDates = () => {
-    const dates = [];
-    const start = new Date();
-    start.setDate(start.getDate() - 2);
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(start);
-      d.setDate(start.getDate() + i);
-      dates.push(d);
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "Reminder",
+          body: selectedTask.title,
+          sound: true,
+        } as any,
+        trigger: {
+          seconds: Math.max(
+            Math.floor((triggerDate.getTime() - now.getTime()) / 1000),
+            2,
+          ),
+        } as any,
+      });
+      Alert.alert("Success", "Alarm set!");
+    } catch (e: any) {
+      Alert.alert("Error", e.message);
     }
-    return dates;
+  };
+
+  // --- HELPERS ---
+  const formatTime = (isoString?: string) => {
+    if (!isoString) return "";
+    return new Date(isoString).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const formatDayDate = (isoString: string) => {
+    const date = new Date(isoString);
+    const today = new Date();
+    const tomorrow = new Date();
+    tomorrow.setDate(today.getDate() + 1);
+
+    date.setHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
+    tomorrow.setHours(0, 0, 0, 0);
+
+    if (date.getTime() === today.getTime()) return "TODAY";
+    if (date.getTime() === tomorrow.getTime()) return "TOMORROW";
+
+    const dayNum = date.getDate();
+    const month = date
+      .toLocaleDateString("en-US", { month: "short" })
+      .toUpperCase();
+    const dayName = date
+      .toLocaleDateString("en-US", { weekday: "long" })
+      .toUpperCase();
+    return `${dayName}, ${month} ${dayNum}`;
+  };
+
+  const groupItemsByDate = (itemsToGroup: Item[]) => {
+    const grouped: { [key: string]: Item[] } = {};
+    itemsToGroup.forEach((item) => {
+      const dateKey = new Date(item.targetDate).toISOString().split("T")[0];
+      if (!grouped[dateKey]) grouped[dateKey] = [];
+      grouped[dateKey].push(item);
+    });
+    return Object.keys(grouped)
+      .sort()
+      .map((dateKey) => ({
+        title: formatDayDate(dateKey),
+        data: grouped[dateKey],
+      }));
   };
 
   const filteredItems = items.filter((i) => {
-    // If Tab is Tasks -> Show only 'task' type (or undefined for old items)
-    // If Tab is Notes -> Show only 'note' type
     const isNote = i.type === "note";
-
-    if (activeTab === "Tasks") {
-      if (isNote) return false; // Hide notes
-      // Filter by Date for Tasks
-      return (
-        new Date(i.targetDate).toDateString() === selectedDate.toDateString()
-      );
-    } else {
-      // Notes Tab
-      return isNote; // Show all notes, ignore date
-    }
+    return activeTab === "Tasks" ? !isNote : isNote;
   });
 
-  // Sort: High priority first
-  filteredItems.sort((a, b) => (a.priority === "High" ? -1 : 1));
-
-  const stats = {
-    pending: items.filter((i) => i.status === "Pending" && i.type !== "note")
-      .length,
-    completed: items.filter((i) => i.status === "Completed").length,
-    notes: items.filter((i) => i.type === "note").length,
-  };
+  const pendingCount = items.filter(
+    (i) => i.status === "Pending" && i.type !== "note",
+  ).length;
+  const totalTasks = items.filter((i) => i.type !== "note").length;
+  const progress = totalTasks
+    ? Math.round(((totalTasks - pendingCount) / totalTasks) * 100)
+    : 0;
+  const groupedTasks =
+    activeTab === "Tasks" ? groupItemsByDate(filteredItems) : null;
 
   if (loading)
     return (
@@ -214,99 +244,48 @@ export default function Index() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          {/* HEADER */}
           <View style={styles.headerRow}>
             <View>
               <Text style={styles.dateText}>
-                {new Date().toLocaleDateString("en-US", {
-                  weekday: "long",
-                  month: "short",
-                  day: "numeric",
-                })}
+                {formatDayDate(new Date().toISOString())}
               </Text>
               <Text style={styles.greeting}>
-                Hello, {user.displayName?.split(" ")[0] || "Deb"} 👋
+                Hello, {user.displayName?.split(" ")[0] || "User"} 👋
               </Text>
             </View>
-            <TouchableOpacity onPress={() => router.push("/profile")}>
-              <Image
-                source={{
-                  uri: user.photoURL || "https://via.placeholder.com/150",
-                }}
-                style={styles.avatar}
-              />
+            <TouchableOpacity
+              onPress={() => router.push("/profile")}
+              style={styles.profileBtn}
+            >
+              {user.photoURL ? (
+                <Image source={{ uri: user.photoURL }} style={styles.avatar} />
+              ) : (
+                <View style={styles.avatarPlaceholder}>
+                  <Ionicons name="person" size={28} color="#fff" />
+                </View>
+              )}
             </TouchableOpacity>
           </View>
 
-          {/* BENTO GRID */}
-          <View style={styles.bentoGrid}>
-            <View
-              style={[
-                styles.bentoCard,
-                { backgroundColor: "#111827", flex: 1.2 },
-              ]}
-            >
-              <View style={styles.iconCircle}>
-                <Ionicons name="flame" size={20} color="#fff" />
+          <View style={styles.statsRow}>
+            <View style={styles.statCard}>
+              <Text style={styles.statLabel}>Progress</Text>
+              <Text style={styles.statValue}>{progress}%</Text>
+              <View style={styles.progressBar}>
+                <View
+                  style={[styles.progressFill, { width: `${progress}%` }]}
+                />
               </View>
-              <Text style={styles.bentoNum}>{stats.completed}</Text>
-              <Text style={styles.bentoLabel}>Tasks Crushed</Text>
             </View>
-            <View
-              style={[
-                styles.bentoCard,
-                {
-                  backgroundColor: "#fff",
-                  flex: 1,
-                  borderWidth: 1,
-                  borderColor: "#e5e7eb",
-                },
-              ]}
-            >
-              <Ionicons name="documents-outline" size={24} color="#111827" />
-              <Text style={[styles.bentoNum, { color: "#111827" }]}>
-                {stats.notes}
+            <View style={styles.statCard}>
+              <Text style={styles.statLabel}>Pending</Text>
+              <Text style={styles.statValue}>{pendingCount}</Text>
+              <Text style={{ fontSize: 10, color: "#9ca3af" }}>
+                Tasks remaining
               </Text>
-              <Text style={styles.bentoLabel}>Ideas Saved</Text>
             </View>
           </View>
 
-          {/* HORIZONTAL CALENDAR */}
-          <View style={{ height: 90 }}>
-            <FlatList
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              data={getWeekDates()}
-              keyExtractor={(item) => item.toISOString()}
-              contentContainerStyle={{ paddingHorizontal: 5, gap: 10 }}
-              renderItem={({ item }) => {
-                const isSelected =
-                  item.toDateString() === selectedDate.toDateString();
-                return (
-                  <TouchableOpacity
-                    onPress={() => setSelectedDate(item)}
-                    style={[
-                      styles.datePill,
-                      isSelected && styles.datePillActive,
-                    ]}
-                  >
-                    <Text
-                      style={[styles.dayText, isSelected && { color: "#fff" }]}
-                    >
-                      {item.toLocaleDateString("en-US", { weekday: "short" })}
-                    </Text>
-                    <Text
-                      style={[styles.dateNum, isSelected && { color: "#fff" }]}
-                    >
-                      {item.getDate()}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              }}
-            />
-          </View>
-
-          {/* TAB SWITCHER */}
           <View style={styles.tabContainer}>
             <TouchableOpacity
               onPress={() => setActiveTab("Tasks")}
@@ -336,204 +315,183 @@ export default function Index() {
             </TouchableOpacity>
           </View>
 
-          {/* LIST AREA WITH SWIPE */}
           <ScrollView
             style={{ flex: 1 }}
             contentContainerStyle={{ paddingBottom: 100 }}
           >
-            {filteredItems.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Ionicons name="sparkles-outline" size={40} color="#d1d5db" />
-                <Text style={{ color: "#9ca3af", marginTop: 10 }}>
-                  {activeTab === "Tasks"
-                    ? "No tasks for today."
-                    : "No notes yet."}
-                </Text>
-              </View>
-            ) : (
-              filteredItems.map((item, index) => {
-                const isHero =
-                  index === 0 &&
-                  item.priority === "High" &&
-                  item.status === "Pending" &&
-                  activeTab === "Tasks";
-
-                // Hero Card (Tasks Only)
-                if (isHero) {
-                  return (
-                    <TouchableOpacity
+            {activeTab === "Tasks" &&
+              groupedTasks &&
+              groupedTasks.map((group) => (
+                <View key={group.title} style={{ marginBottom: 20 }}>
+                  <Text style={styles.dateHeader}>{group.title}</Text>
+                  {group.data.map((item) => (
+                    <View
                       key={item.id}
-                      style={styles.heroCard}
-                      onPress={() => {
-                        setFocusItem(item);
-                        setFocusModalVisible(true);
-                      }}
+                      style={[
+                        styles.taskCard,
+                        { backgroundColor: item.customColor || "#fff" },
+                      ]}
                     >
                       <View
-                        style={[
-                          styles.heroGradient,
-                          { backgroundColor: "#312e81" },
-                        ]}
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "flex-start",
+                        }}
                       >
-                        <View
-                          style={{
-                            flexDirection: "row",
-                            justifyContent: "space-between",
-                          }}
-                        >
-                          <View style={styles.priorityBadge}>
-                            <Text style={styles.priorityText}>
-                              🔥 TOP PRIORITY
-                            </Text>
-                          </View>
-                          <Ionicons name="play-circle" size={32} color="#fff" />
-                        </View>
-                        <Text style={styles.heroTitle}>{item.title}</Text>
-                        <Text style={styles.heroSubtitle}>
-                          Tap to enter Hyper-Focus mode
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                }
-
-                // Standard Item
-                return (
-                  <Swipeable
-                    key={item.id}
-                    renderRightActions={() => renderRightActions(item.id)}
-                    renderLeftActions={() =>
-                      activeTab === "Tasks"
-                        ? renderLeftActions(item.id, item.status)
-                        : null
-                    }
-                  >
-                    <View style={styles.itemRow}>
-                      {activeTab === "Tasks" ? (
                         <TouchableOpacity
                           onPress={() => toggleStatus(item.id, item.status)}
                           style={[
-                            styles.checkCircle,
-                            item.status === "Completed" && {
-                              backgroundColor: "#10b981",
-                              borderColor: "#10b981",
-                            },
+                            styles.checkBox,
+                            item.status === "Completed" && styles.checked,
                           ]}
                         >
                           {item.status === "Completed" && (
                             <Ionicons name="checkmark" size={14} color="#fff" />
                           )}
                         </TouchableOpacity>
-                      ) : (
-                        // Note Icon for Notes
-                        <View
-                          style={[
-                            styles.checkCircle,
-                            { borderWidth: 0, backgroundColor: "#f3f4f6" },
-                          ]}
+                        <View style={{ flex: 1, marginLeft: 10 }}>
+                          <Text
+                            style={[
+                              styles.taskTitle,
+                              item.status === "Completed" && {
+                                textDecorationLine: "line-through",
+                                opacity: 0.5,
+                              },
+                            ]}
+                          >
+                            {item.title}
+                          </Text>
+                          {item.description ? (
+                            <Text style={styles.taskDesc} numberOfLines={1}>
+                              {item.description}
+                            </Text>
+                          ) : null}
+                          {item.startTime && (
+                            <View style={styles.metaRow}>
+                              <Ionicons
+                                name="time-outline"
+                                size={12}
+                                color="#4b5563"
+                              />
+                              <Text style={styles.metaText}>
+                                {formatTime(item.startTime)} -{" "}
+                                {formatTime(item.endTime)}
+                              </Text>
+                            </View>
+                          )}
+                          <View
+                            style={[
+                              styles.catBadge,
+                              { backgroundColor: "rgba(255,255,255,0.6)" },
+                            ]}
+                          >
+                            <Text style={styles.catText}>{item.category}</Text>
+                          </View>
+                        </View>
+                      </View>
+                      <View style={styles.actionRow}>
+                        <TouchableOpacity
+                          onPress={() => handleEditPress(item)}
+                          style={styles.actionBtn}
+                        >
+                          <Ionicons name="pencil" size={18} color="#4b5563" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => openAlarmOptions(item)}
+                          style={styles.actionBtn}
                         >
                           <Ionicons
-                            name="document-text"
-                            size={14}
-                            color="#6b7280"
+                            name="notifications"
+                            size={18}
+                            color="#4b5563"
                           />
-                        </View>
-                      )}
-
-                      <View style={{ flex: 1 }}>
-                        <Text
-                          style={[
-                            styles.itemTitle,
-                            item.status === "Completed" && {
-                              textDecorationLine: "line-through",
-                              color: "#9ca3af",
-                            },
-                          ]}
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => deleteItem(item.id)}
+                          style={styles.actionBtn}
                         >
-                          {item.title}
-                        </Text>
-                        {item.description ? (
-                          <Text style={styles.itemDesc} numberOfLines={1}>
-                            {item.description}
-                          </Text>
-                        ) : null}
+                          <Ionicons name="trash" size={18} color="#ef4444" />
+                        </TouchableOpacity>
                       </View>
-
-                      {/* Priority Dot (Tasks Only) */}
-                      {activeTab === "Tasks" && (
-                        <View
-                          style={[
-                            styles.dot,
-                            {
-                              backgroundColor:
-                                item.priority === "High"
-                                  ? "#ef4444"
-                                  : item.priority === "Medium"
-                                    ? "#f59e0b"
-                                    : "#3b82f6",
-                            },
-                          ]}
-                        />
-                      )}
                     </View>
-                  </Swipeable>
-                );
-              })
-            )}
+                  ))}
+                </View>
+              ))}
+            {activeTab === "Notes" &&
+              filteredItems.map((item) => (
+                <TouchableOpacity
+                  key={item.id}
+                  onPress={() => handleEditPress(item)}
+                  style={styles.noteCard}
+                >
+                  <Text style={styles.taskTitle}>{item.title}</Text>
+                  <Text style={styles.taskDesc}>{item.description}</Text>
+                  <View style={styles.actionRow}>
+                    <TouchableOpacity onPress={() => deleteItem(item.id)}>
+                      <Ionicons
+                        name="trash-outline"
+                        size={18}
+                        color="#ef4444"
+                      />
+                    </TouchableOpacity>
+                  </View>
+                </TouchableOpacity>
+              ))}
           </ScrollView>
         </View>
 
-        {/* --- FLOATING ACTION BUTTON (The Power Button) --- */}
-        <TouchableOpacity style={styles.fab} onPress={handleAddPress}>
-          <Ionicons name="add" size={30} color="#fff" />
+        {/* --- THE POWER BUTTON (HIGH Z-INDEX) --- */}
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={handleAddPress}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="add" size={32} color="#fff" />
         </TouchableOpacity>
 
-        {/* FOCUS MODAL */}
         <Modal
           animationType="slide"
-          visible={focusModalVisible}
-          onRequestClose={() => setFocusModalVisible(false)}
+          transparent={true}
+          visible={alarmModalVisible}
+          onRequestClose={() => setAlarmModalVisible(false)}
         >
-          <SafeAreaView style={styles.focusContainer}>
-            <View style={{ alignItems: "flex-end", padding: 20 }}>
-              <TouchableOpacity onPress={() => setFocusModalVisible(false)}>
-                <Ionicons name="close-circle" size={40} color="#fff" />
-              </TouchableOpacity>
-            </View>
-            <View
-              style={{
-                flex: 1,
-                justifyContent: "center",
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ color: "#9ca3af", letterSpacing: 2 }}>
-                FOCUS MODE
-              </Text>
-              <Text style={styles.focusTitle}>{focusItem?.title}</Text>
-              <Text style={styles.timer}>
-                {Math.floor(timerSeconds / 60)}:
-                {(timerSeconds % 60).toString().padStart(2, "0")}
-              </Text>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Set Reminder</Text>
               <TouchableOpacity
-                onPress={() => setIsActive(!isActive)}
-                style={styles.playBtn}
+                style={styles.modalOption}
+                onPress={() => scheduleAlarm(0)}
               >
-                <Ionicons
-                  name={isActive ? "pause" : "play"}
-                  size={40}
-                  color="#000"
-                />
+                <Text style={styles.optionText}>At start time</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => scheduleAlarm(15)}
+              >
+                <Text style={styles.optionText}>15 minutes before</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => scheduleAlarm(30)}
+              >
+                <Text style={styles.optionText}>30 minutes before</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalOption, { borderBottomWidth: 0 }]}
+                onPress={() => setAlarmModalVisible(false)}
+              >
+                <Text style={[styles.optionText, { color: "#ef4444" }]}>
+                  Cancel
+                </Text>
               </TouchableOpacity>
             </View>
-          </SafeAreaView>
+          </View>
         </Modal>
       </SafeAreaView>
     </GestureHandlerRootView>
   );
 }
 
-// --- STYLES ---
 const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   container: { flex: 1, backgroundColor: "#f9fafb" },
@@ -552,42 +510,47 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   greeting: { fontSize: 24, fontWeight: "800", color: "#111827" },
+  profileBtn: { padding: 2 },
   avatar: {
-    width: 45,
-    height: 45,
+    width: 50,
+    height: 50,
     borderRadius: 25,
     borderWidth: 2,
-    borderColor: "#fff",
-  },
-  bentoGrid: { flexDirection: "row", gap: 12, marginBottom: 25, height: 110 },
-  bentoCard: { borderRadius: 20, padding: 15, justifyContent: "space-between" },
-  iconCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(255,255,255,0.2)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  bentoNum: { fontSize: 32, fontWeight: "bold", color: "#fff", marginTop: 5 },
-  bentoLabel: { fontSize: 12, color: "#9ca3af", fontWeight: "500" },
-  datePill: {
-    width: 55,
-    height: 75,
-    borderRadius: 28,
-    backgroundColor: "#fff",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#f3f4f6",
-  },
-  datePillActive: {
-    backgroundColor: "#111827",
     borderColor: "#111827",
-    transform: [{ scale: 1.05 }],
   },
-  dayText: { fontSize: 12, color: "#9ca3af", marginBottom: 4 },
-  dateNum: { fontSize: 18, fontWeight: "700", color: "#111827" },
+  avatarPlaceholder: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statsRow: { flexDirection: "row", gap: 10, marginBottom: 20 },
+  statCard: {
+    flex: 1,
+    backgroundColor: "#fff",
+    padding: 15,
+    borderRadius: 16,
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+  },
+  statLabel: { fontSize: 12, color: "#6b7280", fontWeight: "600" },
+  statValue: {
+    fontSize: 24,
+    fontWeight: "bold",
+    color: "#111827",
+    marginTop: 5,
+  },
+  progressBar: {
+    height: 4,
+    backgroundColor: "#f3f4f6",
+    borderRadius: 2,
+    marginTop: 10,
+  },
+  progressFill: { height: 4, backgroundColor: "#111827", borderRadius: 2 },
   tabContainer: {
     flexDirection: "row",
     backgroundColor: "#e5e7eb",
@@ -605,110 +568,115 @@ const styles = StyleSheet.create({
   },
   tabText: { fontSize: 14, fontWeight: "600", color: "#6b7280" },
   tabTextActive: { color: "#111827" },
-  heroCard: {
-    marginBottom: 15,
-    borderRadius: 24,
-    overflow: "hidden",
-    shadowColor: "#312e81",
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 5,
+  dateHeader: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#6b7280",
+    marginBottom: 10,
+    marginTop: 10,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
-  heroGradient: { padding: 20, height: 160, justifyContent: "space-between" },
-  priorityBadge: {
-    backgroundColor: "rgba(239, 68, 68, 0.2)",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    alignSelf: "flex-start",
-  },
-  priorityText: { color: "#fca5a5", fontSize: 10, fontWeight: "800" },
-  heroTitle: { color: "#fff", fontSize: 22, fontWeight: "bold", width: "90%" },
-  heroSubtitle: { color: "#a5b4fc", fontSize: 12 },
-  itemRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#fff",
+  taskCard: {
     padding: 16,
-    marginBottom: 1,
-    borderBottomWidth: 1,
-    borderColor: "#f3f4f6",
-    height: 80,
+    borderRadius: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.05)",
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+    elevation: 2,
   },
-  checkCircle: {
+  checkBox: {
     width: 24,
     height: 24,
     borderRadius: 12,
     borderWidth: 2,
-    borderColor: "#e5e7eb",
-    marginRight: 12,
+    borderColor: "#4b5563",
     alignItems: "center",
     justifyContent: "center",
+    marginTop: 2,
   },
-  itemTitle: { fontSize: 16, fontWeight: "600", color: "#1f2937" },
-  itemDesc: { fontSize: 12, color: "#9ca3af", marginTop: 2 },
-  emptyState: { alignItems: "center", marginTop: 50 },
-
-  // FOCUS MODAL
-  focusContainer: { flex: 1, backgroundColor: "#000" },
-  focusTitle: {
-    color: "#fff",
-    fontSize: 32,
-    fontWeight: "bold",
-    textAlign: "center",
-    marginVertical: 40,
-    paddingHorizontal: 20,
+  checked: { backgroundColor: "#10b981", borderColor: "#10b981" },
+  taskTitle: { fontSize: 16, fontWeight: "700", color: "#1f2937" },
+  taskDesc: { fontSize: 13, color: "#4b5563", marginTop: 2 },
+  metaRow: { flexDirection: "row", alignItems: "center", marginTop: 6, gap: 4 },
+  metaText: { fontSize: 12, color: "#4b5563", fontWeight: "500" },
+  catBadge: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginTop: 8,
   },
-  timer: {
-    color: "#fff",
-    fontSize: 80,
-    fontWeight: "200",
-    fontVariant: ["tabular-nums"],
-    marginBottom: 50,
+  catText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#1f2937",
+    textTransform: "uppercase",
   },
-  playBtn: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+  actionRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 12,
+    gap: 15,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(0,0,0,0.1)",
+    paddingTop: 10,
+  },
+  actionBtn: { padding: 4 },
+  noteCard: {
     backgroundColor: "#fff",
-    justifyContent: "center",
-    alignItems: "center",
+    padding: 15,
+    borderRadius: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
   },
-
-  // SWIPE
-  deleteAction: {
-    backgroundColor: "#ef4444",
-    justifyContent: "center",
-    alignItems: "center",
-    width: 80,
-    height: "100%",
-  },
-  completeAction: {
-    backgroundColor: "#10b981",
-    justifyContent: "center",
-    alignItems: "center",
-    width: 80,
-    height: "100%",
-  },
-  actionText: { color: "#fff", fontWeight: "600", fontSize: 12, marginTop: 4 },
-  dot: { width: 8, height: 8, borderRadius: 4, marginLeft: 10 },
-
-  // FAB (The New Plus Button)
   fab: {
     position: "absolute",
     bottom: 30,
     right: 30,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 65,
+    height: 65,
+    borderRadius: 32.5,
     backgroundColor: "#111827",
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.4,
     shadowOffset: { width: 0, height: 5 },
     shadowRadius: 10,
-    elevation: 5,
-    zIndex: 100,
+    elevation: 8,
+    zIndex: 9999,
   },
+  emptyState: { alignItems: "center", marginTop: 40 },
+  emptyText: { color: "#9ca3af" },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  modalContent: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    paddingBottom: 40,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#111827",
+    textAlign: "center",
+    marginBottom: 5,
+  },
+  modalOption: {
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+    alignItems: "center",
+  },
+  optionText: { fontSize: 16, color: "#111827", fontWeight: "500" },
 });

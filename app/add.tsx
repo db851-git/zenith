@@ -1,8 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { addDoc, collection } from "firebase/firestore";
-import { useState } from "react";
+import { addDoc, collection, doc, updateDoc } from "firebase/firestore";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -15,23 +15,29 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { auth, db } from "../../firebaseConfig";
+
+// --- FIXED IMPORT PATH (One dot less) ---
+import { auth, db } from "../firebaseConfig";
 
 export default function AddTask() {
   const router = useRouter();
   const params = useLocalSearchParams();
 
-  // Determine if we are adding a Task or a Note
-  // Default to 'task' if not specified
+  const isEditing = !!params.id;
   const type = params.type === "note" ? "note" : "task";
   const isTask = type === "task";
 
   const [loading, setLoading] = useState(false);
+
+  // State
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState(isTask ? "Work" : "Idea");
   const [priority, setPriority] = useState("Medium");
+  const [customCategory, setCustomCategory] = useState("");
+  const [isCustomCat, setIsCustomCat] = useState(false);
 
+  // Date State
   const [date, setDate] = useState(new Date());
   const [startTime, setStartTime] = useState(new Date());
   const [endTime, setEndTime] = useState(
@@ -42,40 +48,76 @@ export default function AddTask() {
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
 
+  useEffect(() => {
+    if (params.id) {
+      setTitle(params.title as string);
+      setDescription((params.description as string) || "");
+      setCategory(params.category as string);
+      setPriority(params.priority as string);
+      if (params.targetDate) setDate(new Date(params.targetDate as string));
+      if (params.startTime) setStartTime(new Date(params.startTime as string));
+      if (params.endTime) setEndTime(new Date(params.endTime as string));
+    } else {
+      setTitle("");
+      setDescription("");
+      setCategory(isTask ? "Work" : "Idea");
+      setPriority("Medium");
+      setCustomCategory("");
+      setIsCustomCat(false);
+      setDate(new Date());
+      setStartTime(new Date());
+      setEndTime(new Date(new Date().getTime() + 60 * 60 * 1000));
+    }
+  }, [params.id, params.type]);
+
   const categories = isTask
-    ? ["Work", "Personal", "Study", "Health"]
-    : ["Idea", "Journal", "Meeting", "Random"];
+    ? ["Work", "Personal", "Study", "Custom"]
+    : ["Idea", "Journal", "Meeting", "Custom"];
 
   const priorities = ["High", "Medium", "Low"];
 
-  const handleCreate = async () => {
+  const handleSave = async () => {
     if (!title.trim())
       return Alert.alert("Missing Info", "Please add a title!");
     if (!auth.currentUser) return Alert.alert("Error", "Login required.");
 
+    const finalCategory = isCustomCat
+      ? customCategory.trim() || "Custom"
+      : category;
+    const customColor =
+      priority === "High"
+        ? "#fee2e2"
+        : priority === "Medium"
+          ? "#fef3c7"
+          : "#dbeafe";
+
     setLoading(true);
     try {
-      await addDoc(collection(db, "tasks"), {
+      const taskData = {
         title,
         description,
-        category,
-        priority, // Notes still get a priority defaults, useful for sorting
-        type, // CRITICAL: Saves as 'task' or 'note'
+        category: finalCategory,
+        priority,
+        type,
         targetDate: date.toISOString(),
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
-        status: "Pending",
-        userId: auth.currentUser.uid,
-        createdAt: new Date().toISOString(),
-        customColor:
-          priority === "High"
-            ? "#fee2e2"
-            : priority === "Medium"
-              ? "#fef3c7"
-              : "#dbeafe",
-      });
+        customColor,
+      };
 
-      Alert.alert("Success", `${isTask ? "Task" : "Note"} created!`);
+      if (isEditing) {
+        await updateDoc(doc(db, "tasks", params.id as string), taskData);
+        Alert.alert("Updated", "Task updated successfully!");
+      } else {
+        await addDoc(collection(db, "tasks"), {
+          ...taskData,
+          status: "Pending",
+          userId: auth.currentUser.uid,
+          createdAt: new Date().toISOString(),
+        });
+        Alert.alert("Success", "Created successfully!");
+      }
+
       router.back();
     } catch (error: any) {
       Alert.alert("Error", error.message);
@@ -105,35 +147,33 @@ export default function AddTask() {
           >
             <Ionicons name="arrow-back" size={24} color="#111827" />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>New {isTask ? "Task" : "Note"}</Text>
+          <Text style={styles.headerTitle}>
+            {isEditing ? "Edit" : "New"} {isTask ? "Task" : "Note"}
+          </Text>
         </View>
 
         <View style={styles.formCard}>
-          {/* Title */}
           <Text style={styles.label}>Title</Text>
           <TextInput
             style={styles.input}
-            placeholder={isTask ? "What needs to be done?" : "Note Title..."}
+            placeholder="Title"
             placeholderTextColor="#9ca3af"
             value={title}
             onChangeText={setTitle}
           />
 
-          {/* Description */}
-          <Text style={styles.label}>{isTask ? "Description" : "Content"}</Text>
+          <Text style={styles.label}>Description</Text>
           <TextInput
-            style={[styles.input, { height: 120, textAlignVertical: "top" }]}
-            placeholder="Add details..."
+            style={[styles.input, { height: 100, textAlignVertical: "top" }]}
+            placeholder="Details..."
             placeholderTextColor="#9ca3af"
             multiline
             value={description}
             onChangeText={setDescription}
           />
 
-          {/* TASK ONLY FIELDS */}
           {isTask && (
             <>
-              {/* Date */}
               <Text style={styles.label}>Date</Text>
               <TouchableOpacity
                 style={styles.pickerBtn}
@@ -150,7 +190,6 @@ export default function AddTask() {
                 />
               )}
 
-              {/* Time */}
               <View style={styles.row}>
                 <View style={{ flex: 1, marginRight: 10 }}>
                   <Text style={styles.label}>Start Time</Text>
@@ -176,21 +215,64 @@ export default function AddTask() {
                     />
                   )}
                 </View>
+
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={styles.label}>End Time</Text>
+                  <TouchableOpacity
+                    style={styles.pickerBtn}
+                    onPress={() => setShowEndTimePicker(true)}
+                  >
+                    <Text style={styles.pickerText}>
+                      {endTime.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </Text>
+                  </TouchableOpacity>
+                  {showEndTimePicker && (
+                    <DateTimePicker
+                      value={endTime}
+                      mode="time"
+                      onChange={(e, d) => {
+                        setShowEndTimePicker(false);
+                        if (d) setEndTime(d);
+                      }}
+                    />
+                  )}
+                </View>
               </View>
 
-              {/* Priority */}
               <Text style={styles.label}>Priority</Text>
               <View style={styles.chipContainer}>
                 {priorities.map((p) => (
                   <TouchableOpacity
                     key={p}
-                    style={[styles.chip, priority === p && styles.activeChip]}
+                    style={[
+                      styles.chip,
+                      priority === p && styles.activeChip,
+                      priority === p && p === "High"
+                        ? { backgroundColor: "#fee2e2", borderColor: "#ef4444" }
+                        : priority === p && p === "Medium"
+                          ? {
+                              backgroundColor: "#fef3c7",
+                              borderColor: "#f59e0b",
+                            }
+                          : priority === p && p === "Low"
+                            ? {
+                                backgroundColor: "#dbeafe",
+                                borderColor: "#3b82f6",
+                              }
+                            : {},
+                    ]}
                     onPress={() => setPriority(p)}
                   >
                     <Text
                       style={[
                         styles.chipText,
-                        priority === p && { color: "#fff" },
+                        priority === p && {
+                          fontWeight: "bold",
+                          color: "#111827",
+                        },
                       ]}
                     >
                       {p}
@@ -201,14 +283,16 @@ export default function AddTask() {
             </>
           )}
 
-          {/* Category */}
           <Text style={styles.label}>Category</Text>
           <View style={styles.chipContainer}>
             {categories.map((cat) => (
               <TouchableOpacity
                 key={cat}
                 style={[styles.chip, category === cat && styles.activeChip]}
-                onPress={() => setCategory(cat)}
+                onPress={() => {
+                  setCategory(cat);
+                  setIsCustomCat(cat === "Custom");
+                }}
               >
                 <Text
                   style={[
@@ -222,17 +306,25 @@ export default function AddTask() {
             ))}
           </View>
 
-          {/* Button */}
+          {isCustomCat && (
+            <TextInput
+              style={[styles.input, { marginTop: 10, borderColor: "#111827" }]}
+              placeholder="Enter Category Name"
+              value={customCategory}
+              onChangeText={setCustomCategory}
+            />
+          )}
+
           <TouchableOpacity
             style={styles.createBtn}
-            onPress={handleCreate}
+            onPress={handleSave}
             disabled={loading}
           >
             {loading ? (
               <ActivityIndicator color="#fff" />
             ) : (
               <Text style={styles.createBtnText}>
-                Save {isTask ? "Task" : "Note"}
+                {isEditing ? "Update" : "Save"}
               </Text>
             )}
           </TouchableOpacity>
