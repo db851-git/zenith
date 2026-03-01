@@ -15,8 +15,6 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-
-// --- FIXED IMPORT PATH (One dot less) ---
 import { auth, db } from "../firebaseConfig";
 
 export default function AddTask() {
@@ -24,12 +22,11 @@ export default function AddTask() {
   const params = useLocalSearchParams();
 
   const isEditing = !!params.id;
-  const type = params.type === "note" ? "note" : "task";
-  const isTask = type === "task";
+  // THIS LINE FIXES THE ISSUE:
+  const isTask = params.type !== "note";
 
   const [loading, setLoading] = useState(false);
 
-  // State
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState(isTask ? "Work" : "Idea");
@@ -37,7 +34,6 @@ export default function AddTask() {
   const [customCategory, setCustomCategory] = useState("");
   const [isCustomCat, setIsCustomCat] = useState(false);
 
-  // Date State
   const [date, setDate] = useState(new Date());
   const [startTime, setStartTime] = useState(new Date());
   const [endTime, setEndTime] = useState(
@@ -58,6 +54,7 @@ export default function AddTask() {
       if (params.startTime) setStartTime(new Date(params.startTime as string));
       if (params.endTime) setEndTime(new Date(params.endTime as string));
     } else {
+      // RESET FORM ON NEW ENTRY
       setTitle("");
       setDescription("");
       setCategory(isTask ? "Work" : "Idea");
@@ -98,7 +95,7 @@ export default function AddTask() {
         description,
         category: finalCategory,
         priority,
-        type,
+        type: isTask ? "task" : "note",
         targetDate: date.toISOString(),
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
@@ -107,7 +104,7 @@ export default function AddTask() {
 
       if (isEditing) {
         await updateDoc(doc(db, "tasks", params.id as string), taskData);
-        Alert.alert("Updated", "Task updated successfully!");
+        Alert.alert("Updated", "Updated successfully!");
       } else {
         await addDoc(collection(db, "tasks"), {
           ...taskData,
@@ -156,22 +153,23 @@ export default function AddTask() {
           <Text style={styles.label}>Title</Text>
           <TextInput
             style={styles.input}
-            placeholder="Title"
+            placeholder={isTask ? "Task Title" : "Note Title"}
             placeholderTextColor="#9ca3af"
             value={title}
             onChangeText={setTitle}
           />
 
-          <Text style={styles.label}>Description</Text>
+          <Text style={styles.label}>{isTask ? "Description" : "Content"}</Text>
           <TextInput
             style={[styles.input, { height: 100, textAlignVertical: "top" }]}
-            placeholder="Details..."
+            placeholder={isTask ? "Details..." : "Write your note here..."}
             placeholderTextColor="#9ca3af"
             multiline
             value={description}
             onChangeText={setDescription}
           />
 
+          {/* HIDE THESE IF IT IS A NOTE */}
           {isTask && (
             <>
               <Text style={styles.label}>Date</Text>
@@ -324,7 +322,7 @@ export default function AddTask() {
               <ActivityIndicator color="#fff" />
             ) : (
               <Text style={styles.createBtnText}>
-                {isEditing ? "Update" : "Save"}
+                {isEditing ? "Update" : "Save"} {isTask ? "Task" : "Note"}
               </Text>
             )}
           </TouchableOpacity>

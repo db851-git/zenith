@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Notifications from "expo-notifications";
-import { useRouter } from "expo-router"; // We use the hook
+import { useRouter } from "expo-router";
 import { onAuthStateChanged } from "firebase/auth";
 import {
   collection,
@@ -23,7 +23,7 @@ import {
   Text,
   TouchableOpacity,
   Vibration,
-  View,
+  View
 } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { auth, db } from "../../firebaseConfig";
@@ -54,11 +54,12 @@ interface Item {
 }
 
 export default function Index() {
-  const router = useRouter(); // Initialize Router
+  const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // RENAME: "Notes" instead of "Brain Notes"
   const [activeTab, setActiveTab] = useState<"Tasks" | "Notes">("Tasks");
   const [alarmModalVisible, setAlarmModalVisible] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Item | null>(null);
@@ -91,10 +92,14 @@ export default function Index() {
 
   // --- ACTIONS ---
   const handleAddPress = () => {
-    console.log("Navigating to global /add...");
-    // We moved the file to app/add.tsx, so the route is just "/add"
-    // This breaks it out of the tab navigation logic entirely
-    router.push("/add");
+    // PASS THE CORRECT TYPE
+    // If activeTab is 'Notes', we send type='note'
+    const targetType = activeTab === "Notes" ? "note" : "task";
+
+    router.push({
+      pathname: "/add",
+      params: { type: targetType },
+    });
   };
 
   const handleEditPress = (item: Item) => {
@@ -165,7 +170,6 @@ export default function Index() {
     }
   };
 
-  // --- HELPERS ---
   const formatTime = (isoString?: string) => {
     if (!isoString) return "";
     return new Date(isoString).toLocaleTimeString([], {
@@ -286,6 +290,7 @@ export default function Index() {
             </View>
           </View>
 
+          {/* TAB SWITCHER */}
           <View style={styles.tabContainer}>
             <TouchableOpacity
               onPress={() => setActiveTab("Tasks")}
@@ -300,6 +305,8 @@ export default function Index() {
                 My Tasks
               </Text>
             </TouchableOpacity>
+
+            {/* RENAMED TO "NOTES" */}
             <TouchableOpacity
               onPress={() => setActiveTab("Notes")}
               style={[styles.tab, activeTab === "Notes" && styles.tabActive]}
@@ -310,7 +317,7 @@ export default function Index() {
                   activeTab === "Notes" && styles.tabTextActive,
                 ]}
               >
-                Brain Notes
+                Notes
               </Text>
             </TouchableOpacity>
           </View>
@@ -440,7 +447,7 @@ export default function Index() {
           </ScrollView>
         </View>
 
-        {/* --- THE POWER BUTTON (HIGH Z-INDEX) --- */}
+        {/* FAB */}
         <TouchableOpacity
           style={styles.fab}
           onPress={handleAddPress}
