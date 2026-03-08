@@ -23,7 +23,7 @@ import {
   Text,
   TouchableOpacity,
   Vibration,
-  View
+  View,
 } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { auth, db } from "../../firebaseConfig";
@@ -178,24 +178,25 @@ export default function Index() {
     });
   };
 
+  // --- SMART DATE HEADER (TODAY / TOMORROW) ---
+
   const formatDayDate = (isoString: string) => {
-    const date = new Date(isoString);
+    const targetDate = new Date(isoString);
     const today = new Date();
     const tomorrow = new Date();
     tomorrow.setDate(today.getDate() + 1);
 
-    date.setHours(0, 0, 0, 0);
-    today.setHours(0, 0, 0, 0);
-    tomorrow.setHours(0, 0, 0, 0);
+    // Bulletproof local timezone comparison
+    if (targetDate.toDateString() === today.toDateString()) return "TODAY";
+    if (targetDate.toDateString() === tomorrow.toDateString())
+      return "TOMORROW";
 
-    if (date.getTime() === today.getTime()) return "TODAY";
-    if (date.getTime() === tomorrow.getTime()) return "TOMORROW";
-
-    const dayNum = date.getDate();
-    const month = date
+    // Regular Format
+    const dayNum = targetDate.getDate();
+    const month = targetDate
       .toLocaleDateString("en-US", { month: "short" })
       .toUpperCase();
-    const dayName = date
+    const dayName = targetDate
       .toLocaleDateString("en-US", { weekday: "long" })
       .toUpperCase();
     return `${dayName}, ${month} ${dayNum}`;
@@ -203,13 +204,33 @@ export default function Index() {
 
   const groupItemsByDate = (itemsToGroup: Item[]) => {
     const grouped: { [key: string]: Item[] } = {};
+
     itemsToGroup.forEach((item) => {
-      const dateKey = new Date(item.targetDate).toISOString().split("T")[0];
+      const d = new Date(item.targetDate);
+      const dateKey = d.toDateString();
+
       if (!grouped[dateKey]) grouped[dateKey] = [];
       grouped[dateKey].push(item);
     });
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayTime = today.getTime();
+
+    // Sort: Today -> Tomorrow -> Future Dates -> Past Dates (at the bottom)
     return Object.keys(grouped)
-      .sort()
+      .sort((a, b) => {
+        const timeA = new Date(a).getTime();
+        const timeB = new Date(b).getTime();
+
+        const isPastA = timeA < todayTime;
+        const isPastB = timeB < todayTime;
+
+        if (isPastA && !isPastB) return 1; // Push old dates down
+        if (!isPastA && isPastB) return -1; // Keep new dates up
+
+        return timeA - timeB; // Sort the rest normally
+      })
       .map((dateKey) => ({
         title: formatDayDate(dateKey),
         data: grouped[dateKey],
@@ -221,16 +242,21 @@ export default function Index() {
     return activeTab === "Tasks" ? !isNote : isNote;
   });
 
-  const pendingCount = items.filter(
-    (i) => i.status === "Pending" && i.type !== "note",
-  ).length;
-  const totalTasks = items.filter((i) => i.type !== "note").length;
+  // --- NEW: CALCULATE STATS FOR TODAY ONLY ---
+  const todayStr = new Date().toDateString();
+  const todaysTasks = items.filter(
+    (i) =>
+      i.type !== "note" && new Date(i.targetDate).toDateString() === todayStr,
+  );
+
+  const pendingCount = todaysTasks.filter((i) => i.status === "Pending").length;
+  const totalTasks = todaysTasks.length;
   const progress = totalTasks
     ? Math.round(((totalTasks - pendingCount) / totalTasks) * 100)
     : 0;
+
   const groupedTasks =
     activeTab === "Tasks" ? groupItemsByDate(filteredItems) : null;
-
   if (loading)
     return (
       <View style={styles.center}>
@@ -248,13 +274,21 @@ export default function Index() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
+          {/* HEADER */}
+          {/* HEADER */}
           <View style={styles.headerRow}>
             <View>
               <Text style={styles.dateText}>
-                {formatDayDate(new Date().toISOString())}
+                {new Date()
+                  .toLocaleDateString("en-US", {
+                    weekday: "long",
+                    month: "short",
+                    day: "numeric",
+                  })
+                  .toUpperCase()}
               </Text>
               <Text style={styles.greeting}>
-                Hello, {user.displayName?.split(" ")[0] || "User"} 👋
+                Hello, {user.displayName?.split(" ")[0] || "Dev"} 👋
               </Text>
             </View>
             <TouchableOpacity
@@ -336,7 +370,10 @@ export default function Index() {
                       key={item.id}
                       style={[
                         styles.taskCard,
-                        { backgroundColor: item.customColor || "#fff" },
+                        {
+                          backgroundColor: "#fff",
+                        } /* FIXED: Removed custom background color */,
+                        item.status === "Completed" && { opacity: 0.4 },
                       ]}
                     >
                       <View
@@ -356,18 +393,42 @@ export default function Index() {
                             <Ionicons name="checkmark" size={14} color="#fff" />
                           )}
                         </TouchableOpacity>
+
                         <View style={{ flex: 1, marginLeft: 10 }}>
-                          <Text
-                            style={[
-                              styles.taskTitle,
-                              item.status === "Completed" && {
-                                textDecorationLine: "line-through",
-                                opacity: 0.5,
-                              },
-                            ]}
+                          {/* FIXED: Title and Priority Row */}
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              justifyContent: "space-between",
+                              alignItems: "flex-start",
+                            }}
                           >
-                            {item.title}
-                          </Text>
+                            <Text
+                              style={[
+                                styles.taskTitle,
+                                item.status === "Completed" && {
+                                  textDecorationLine: "line-through",
+                                  opacity: 0.5,
+                                },
+                                { flex: 1, paddingRight: 10 },
+                              ]}
+                            >
+                              {item.title}
+                            </Text>
+                            <Text
+                              style={[
+                                styles.priorityText,
+                                item.priority === "High"
+                                  ? { color: "#ef4444" }
+                                  : item.priority === "Medium"
+                                    ? { color: "#f59e0b" }
+                                    : { color: "#3b82f6" },
+                              ]}
+                            >
+                              {item.priority?.toUpperCase() || "MEDIUM"}
+                            </Text>
+                          </View>
+
                           {item.description ? (
                             <Text style={styles.taskDesc} numberOfLines={1}>
                               {item.description}
@@ -608,6 +669,7 @@ const styles = StyleSheet.create({
   checked: { backgroundColor: "#10b981", borderColor: "#10b981" },
   taskTitle: { fontSize: 16, fontWeight: "700", color: "#1f2937" },
   taskDesc: { fontSize: 13, color: "#4b5563", marginTop: 2 },
+  priorityText: { fontSize: 12, fontWeight: "700", textTransform: "uppercase" },
   metaRow: { flexDirection: "row", alignItems: "center", marginTop: 6, gap: 4 },
   metaText: { fontSize: 12, color: "#4b5563", fontWeight: "500" },
   catBadge: {
