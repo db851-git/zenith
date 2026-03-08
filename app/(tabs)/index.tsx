@@ -1,3 +1,4 @@
+// 1. ALL IMPORTS GO HERE FIRST
 import { Ionicons } from "@expo/vector-icons";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
@@ -16,18 +17,33 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  LayoutAnimation,
   Modal,
+  Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
+  UIManager,
   Vibration,
   View,
 } from "react-native";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
+
+// --- UPDATED: Added necessary Gesture Handler imports ---
+import {
+  Directions,
+  FlingGestureHandler,
+  GestureHandlerRootView,
+  State,
+} from "react-native-gesture-handler";
+import Swipeable from "react-native-gesture-handler/Swipeable";
+
 import { auth, db } from "../../firebaseConfig";
 
+// ============================================================================
+// === 📌 SECTION: CONFIGURATIONS & NOTIFICATIONS ===
+// ============================================================================
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowBanner: true,
@@ -37,6 +53,17 @@ Notifications.setNotificationHandler({
   }),
 });
 
+// ENABLE SMOOTH ANIMATIONS FOR ANDROID
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+// ============================================================================
+// === 📌 SECTION: TYPES & INTERFACES ===
+// ============================================================================
 interface Item {
   id: string;
   type: "task" | "note";
@@ -53,17 +80,51 @@ interface Item {
   createdAt: any;
 }
 
+// ============================================================================
+// === 📌 SECTION: HELPER FUNCTIONS ===
+// ============================================================================
+// --- PRO UI HELPER: Dynamic Category Colors ---
+const getCategoryColor = (category: string) => {
+  const colors: Record<string, { bg: string; text: string }> = {
+    Work: { bg: "#dbeafe", text: "#1e3a8a" }, // Blue
+    Personal: { bg: "#dcfce7", text: "#166534" }, // Green
+    Study: { bg: "#f3e8ff", text: "#6b21a8" }, // Purple
+    Idea: { bg: "#fef9c3", text: "#854d0e" }, // Yellow
+    Journal: { bg: "#ffedd5", text: "#9a3412" }, // Orange
+    Meeting: { bg: "#fee2e2", text: "#991b1b" }, // Red
+  };
+  // Default color for any custom categories
+  return colors[category] || { bg: "#f3f4f6", text: "#374151" };
+};
+
+// ============================================================================
+// === 📌 SECTION: MAIN COMPONENT START ===
+// ============================================================================
 export default function Index() {
   const router = useRouter();
+
+  // ==========================================
+  // --- STATE MANAGEMENT ---
+  // ==========================================
   const [user, setUser] = useState<any>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // RENAME: "Notes" instead of "Brain Notes"
   const [activeTab, setActiveTab] = useState<"Tasks" | "Notes">("Tasks");
   const [alarmModalVisible, setAlarmModalVisible] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Item | null>(null);
 
+  // --- NEW: SMOOTH TAB SWITCHING ANIMATION ---
+  const switchTab = (tab: "Tasks" | "Notes") => {
+    if (activeTab !== tab) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setActiveTab(tab);
+    }
+  };
+
+  // ==========================================
+  // --- USE EFFECTS (AUTH & FIREBASE FETCHING) ---
+  // ==========================================
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -90,12 +151,11 @@ export default function Index() {
     return () => unsub();
   }, [user]);
 
-  // --- ACTIONS ---
+  // ==========================================
+  // --- ACTIONS (ADD, EDIT, DELETE, STATUS) ---
+  // ==========================================
   const handleAddPress = () => {
-    // PASS THE CORRECT TYPE
-    // If activeTab is 'Notes', we send type='note'
     const targetType = activeTab === "Notes" ? "note" : "task";
-
     router.push({
       pathname: "/add",
       params: { type: targetType },
@@ -136,6 +196,9 @@ export default function Index() {
     ]);
   };
 
+  // ==========================================
+  // --- ALARM LOGIC ---
+  // ==========================================
   const openAlarmOptions = (task: Item) => {
     if (!task.startTime)
       return Alert.alert("No Time", "This task has no start time.");
@@ -170,6 +233,9 @@ export default function Index() {
     }
   };
 
+  // ==========================================
+  // --- FORMATTERS (TIME, DATE, GROUPING) ---
+  // ==========================================
   const formatTime = (isoString?: string) => {
     if (!isoString) return "";
     return new Date(isoString).toLocaleTimeString([], {
@@ -178,20 +244,16 @@ export default function Index() {
     });
   };
 
-  // --- SMART DATE HEADER (TODAY / TOMORROW) ---
-
   const formatDayDate = (isoString: string) => {
     const targetDate = new Date(isoString);
     const today = new Date();
     const tomorrow = new Date();
     tomorrow.setDate(today.getDate() + 1);
 
-    // Bulletproof local timezone comparison
     if (targetDate.toDateString() === today.toDateString()) return "TODAY";
     if (targetDate.toDateString() === tomorrow.toDateString())
       return "TOMORROW";
 
-    // Regular Format
     const dayNum = targetDate.getDate();
     const month = targetDate
       .toLocaleDateString("en-US", { month: "short" })
@@ -217,7 +279,6 @@ export default function Index() {
     today.setHours(0, 0, 0, 0);
     const todayTime = today.getTime();
 
-    // Sort: Today -> Tomorrow -> Future Dates -> Past Dates (at the bottom)
     return Object.keys(grouped)
       .sort((a, b) => {
         const timeA = new Date(a).getTime();
@@ -226,10 +287,10 @@ export default function Index() {
         const isPastA = timeA < todayTime;
         const isPastB = timeB < todayTime;
 
-        if (isPastA && !isPastB) return 1; // Push old dates down
-        if (!isPastA && isPastB) return -1; // Keep new dates up
+        if (isPastA && !isPastB) return 1;
+        if (!isPastA && isPastB) return -1;
 
-        return timeA - timeB; // Sort the rest normally
+        return timeA - timeB;
       })
       .map((dateKey) => ({
         title: formatDayDate(dateKey),
@@ -237,12 +298,14 @@ export default function Index() {
       }));
   };
 
+  // ==========================================
+  // --- DATA FILTERING & STATS CALCULATIONS ---
+  // ==========================================
   const filteredItems = items.filter((i) => {
     const isNote = i.type === "note";
     return activeTab === "Tasks" ? !isNote : isNote;
   });
 
-  // --- NEW: CALCULATE STATS FOR TODAY ONLY ---
   const todayStr = new Date().toDateString();
   const todaysTasks = items.filter(
     (i) =>
@@ -257,6 +320,10 @@ export default function Index() {
 
   const groupedTasks =
     activeTab === "Tasks" ? groupItemsByDate(filteredItems) : null;
+
+  // ==========================================
+  // --- LOADING / AUTH SCREENS ---
+  // ==========================================
   if (loading)
     return (
       <View style={styles.center}>
@@ -270,12 +337,16 @@ export default function Index() {
       </View>
     );
 
+  // ============================================================================
+  // === 📌 SECTION: RENDER UI STARTS HERE ===
+  // ============================================================================
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
-          {/* HEADER */}
-          {/* HEADER */}
+          {/* ========================================== */}
+          {/* 📌 UI: HEADER (Date, Greeting, Profile Icon) */}
+          {/* ========================================== */}
           <View style={styles.headerRow}>
             <View>
               <Text style={styles.dateText}>
@@ -305,6 +376,9 @@ export default function Index() {
             </TouchableOpacity>
           </View>
 
+          {/* ========================================== */}
+          {/* 📌 UI: STATS CARDS (Progress Bar & Pending)  */}
+          {/* ========================================== */}
           <View style={styles.statsRow}>
             <View style={styles.statCard}>
               <Text style={styles.statLabel}>Progress</Text>
@@ -324,10 +398,12 @@ export default function Index() {
             </View>
           </View>
 
-          {/* TAB SWITCHER */}
+          {/* ========================================== */}
+          {/* 📌 UI: TAB SWITCHER (Tasks vs Notes)         */}
+          {/* ========================================== */}
           <View style={styles.tabContainer}>
             <TouchableOpacity
-              onPress={() => setActiveTab("Tasks")}
+              onPress={() => switchTab("Tasks")}
               style={[styles.tab, activeTab === "Tasks" && styles.tabActive]}
             >
               <Text
@@ -340,9 +416,8 @@ export default function Index() {
               </Text>
             </TouchableOpacity>
 
-            {/* RENAMED TO "NOTES" */}
             <TouchableOpacity
-              onPress={() => setActiveTab("Notes")}
+              onPress={() => switchTab("Notes")}
               style={[styles.tab, activeTab === "Notes" && styles.tabActive]}
             >
               <Text
@@ -356,159 +431,283 @@ export default function Index() {
             </TouchableOpacity>
           </View>
 
-          <ScrollView
-            style={{ flex: 1 }}
-            contentContainerStyle={{ paddingBottom: 100 }}
+          {/* ========================================== */}
+          {/* 📌 UI: MAIN SCROLL VIEW WITH SWIPE GESTURES  */}
+          {/* ========================================== */}
+          <FlingGestureHandler
+            direction={Directions.LEFT}
+            onHandlerStateChange={({ nativeEvent }) => {
+              if (nativeEvent.state === State.ACTIVE) switchTab("Notes");
+            }}
           >
-            {activeTab === "Tasks" &&
-              groupedTasks &&
-              groupedTasks.map((group) => (
-                <View key={group.title} style={{ marginBottom: 20 }}>
-                  <Text style={styles.dateHeader}>{group.title}</Text>
-                  {group.data.map((item) => (
-                    <View
-                      key={item.id}
-                      style={[
-                        styles.taskCard,
-                        {
-                          backgroundColor: "#fff",
-                        } /* FIXED: Removed custom background color */,
-                        item.status === "Completed" && { opacity: 0.4 },
-                      ]}
-                    >
-                      <View
-                        style={{
-                          flexDirection: "row",
-                          alignItems: "flex-start",
-                        }}
-                      >
-                        <TouchableOpacity
-                          onPress={() => toggleStatus(item.id, item.status)}
-                          style={[
-                            styles.checkBox,
-                            item.status === "Completed" && styles.checked,
-                          ]}
-                        >
-                          {item.status === "Completed" && (
-                            <Ionicons name="checkmark" size={14} color="#fff" />
-                          )}
-                        </TouchableOpacity>
+            <FlingGestureHandler
+              direction={Directions.RIGHT}
+              onHandlerStateChange={({ nativeEvent }) => {
+                if (nativeEvent.state === State.ACTIVE) switchTab("Tasks");
+              }}
+            >
+              <ScrollView
+                style={{ flex: 1 }}
+                contentContainerStyle={{ paddingBottom: 100 }}
+              >
+                {/* ========================================== */}
+                {/* 📌 UI: TASKS VIEW                           */}
+                {/* ========================================== */}
+                {activeTab === "Tasks" &&
+                  groupedTasks &&
+                  groupedTasks.map((group) => (
+                    <View key={group.title} style={{ marginBottom: 20 }}>
+                      <Text style={styles.dateHeader}>{group.title}</Text>
 
-                        <View style={{ flex: 1, marginLeft: 10 }}>
-                          {/* FIXED: Title and Priority Row */}
-                          <View
-                            style={{
-                              flexDirection: "row",
-                              justifyContent: "space-between",
-                              alignItems: "flex-start",
-                            }}
-                          >
-                            <Text
-                              style={[
-                                styles.taskTitle,
-                                item.status === "Completed" && {
-                                  textDecorationLine: "line-through",
-                                  opacity: 0.5,
-                                },
-                                { flex: 1, paddingRight: 10 },
-                              ]}
+                      {/* --- LOOP OVER ITEMS IN DATE GROUP --- */}
+                      {group.data.map((item) => (
+                        /* ========================================== */
+                        /* 📌 UI: SINGLE TASK TILE (SWIPEABLE)         */
+                        /* ========================================== */
+                        <Swipeable
+                          key={item.id}
+                          renderRightActions={() => (
+                            <View
+                              style={{
+                                flexDirection: "row",
+                                alignItems: "center",
+                                paddingLeft: 10,
+                              }}
                             >
-                              {item.title}
-                            </Text>
-                            <Text
-                              style={[
-                                styles.priorityText,
-                                item.priority === "High"
-                                  ? { color: "#ef4444" }
-                                  : item.priority === "Medium"
-                                    ? { color: "#f59e0b" }
-                                    : { color: "#3b82f6" },
-                              ]}
-                            >
-                              {item.priority?.toUpperCase() || "MEDIUM"}
-                            </Text>
-                          </View>
-
-                          {item.description ? (
-                            <Text style={styles.taskDesc} numberOfLines={1}>
-                              {item.description}
-                            </Text>
-                          ) : null}
-                          {item.startTime && (
-                            <View style={styles.metaRow}>
-                              <Ionicons
-                                name="time-outline"
-                                size={12}
-                                color="#4b5563"
-                              />
-                              <Text style={styles.metaText}>
-                                {formatTime(item.startTime)} -{" "}
-                                {formatTime(item.endTime)}
-                              </Text>
+                              <TouchableOpacity
+                                onPress={() => handleEditPress(item)}
+                                style={[
+                                  styles.swipeBtn,
+                                  { backgroundColor: "#10b981" },
+                                ]}
+                              >
+                                <Ionicons
+                                  name="pencil"
+                                  size={20}
+                                  color="#fff"
+                                />
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                onPress={() => deleteItem(item.id)}
+                                style={[
+                                  styles.swipeBtn,
+                                  { backgroundColor: "#ef4444" },
+                                ]}
+                              >
+                                <Ionicons name="trash" size={20} color="#fff" />
+                              </TouchableOpacity>
                             </View>
                           )}
+                        >
                           <View
                             style={[
-                              styles.catBadge,
-                              { backgroundColor: "rgba(255,255,255,0.6)" },
+                              styles.taskCard,
+                              { backgroundColor: "#fff" },
+                              item.status === "Completed" && { opacity: 0.4 },
                             ]}
                           >
-                            <Text style={styles.catText}>{item.category}</Text>
+                            {/* --- CLICK ANYWHERE ON TOP HALF TO TOGGLE --- */}
+                            <TouchableOpacity
+                              activeOpacity={0.6}
+                              onPress={() => toggleStatus(item.id, item.status)}
+                              style={{
+                                flexDirection: "row",
+                                alignItems: "flex-start",
+                              }}
+                            >
+                              <View
+                                style={[
+                                  styles.checkBox,
+                                  item.status === "Completed" && styles.checked,
+                                ]}
+                              >
+                                {item.status === "Completed" && (
+                                  <Ionicons
+                                    name="checkmark"
+                                    size={14}
+                                    color="#fff"
+                                  />
+                                )}
+                              </View>
+
+                              <View style={{ flex: 1, marginLeft: 10 }}>
+                                <View
+                                  style={{
+                                    flexDirection: "row",
+                                    justifyContent: "space-between",
+                                    alignItems: "flex-start",
+                                  }}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.taskTitle,
+                                      item.status === "Completed" && {
+                                        textDecorationLine: "line-through",
+                                        opacity: 0.5,
+                                      },
+                                      { flex: 1, paddingRight: 10 },
+                                    ]}
+                                  >
+                                    {item.title}
+                                  </Text>
+
+                                  <View
+                                    style={[
+                                      styles.priorityBadge,
+                                      item.priority === "High"
+                                        ? { backgroundColor: "#fee2e2" }
+                                        : item.priority === "Medium"
+                                          ? { backgroundColor: "#fef3c7" }
+                                          : { backgroundColor: "#dbeafe" },
+                                    ]}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.priorityText,
+                                        item.priority === "High"
+                                          ? { color: "#ef4444" }
+                                          : item.priority === "Medium"
+                                            ? { color: "#f59e0b" }
+                                            : { color: "#3b82f6" },
+                                      ]}
+                                    >
+                                      {item.priority === "High"
+                                        ? "🔥 HIGH"
+                                        : item.priority === "Medium"
+                                          ? "⚡ MEDIUM"
+                                          : "🧊 LOW"}
+                                    </Text>
+                                  </View>
+                                </View>
+
+                                {item.description ? (
+                                  <Text
+                                    style={styles.taskDesc}
+                                    numberOfLines={1}
+                                  >
+                                    {item.description}
+                                  </Text>
+                                ) : null}
+                                {item.startTime && (
+                                  <View style={styles.metaRow}>
+                                    <Ionicons
+                                      name="time-outline"
+                                      size={12}
+                                      color="#4b5563"
+                                    />
+                                    <Text style={styles.metaText}>
+                                      {formatTime(item.startTime)} -{" "}
+                                      {formatTime(item.endTime)}
+                                    </Text>
+                                  </View>
+                                )}
+
+                                <View
+                                  style={[
+                                    styles.catBadge,
+                                    {
+                                      backgroundColor: getCategoryColor(
+                                        item.category,
+                                      ).bg,
+                                    },
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.catText,
+                                      {
+                                        color: getCategoryColor(item.category)
+                                          .text,
+                                      },
+                                    ]}
+                                  >
+                                    {item.category}
+                                  </Text>
+                                </View>
+                              </View>
+                            </TouchableOpacity>
+
+                            {/* --- BOTTOM ACTION ROW (SEPARATE FROM TOGGLE CLICK) --- */}
+                            <View style={styles.actionRow}>
+                              <TouchableOpacity
+                                onPress={() => handleEditPress(item)}
+                                style={[
+                                  styles.priorityBadge,
+                                  {
+                                    backgroundColor: "#f3f4f6",
+                                    marginRight: "auto",
+                                    marginTop: 5,
+                                  },
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.priorityText,
+                                    { color: "#4b5563" },
+                                  ]}
+                                >
+                                  ✏️ EDIT
+                                </Text>
+                              </TouchableOpacity>
+
+                              <TouchableOpacity
+                                onPress={() => openAlarmOptions(item)}
+                                style={styles.actionBtn}
+                              >
+                                <Ionicons
+                                  name="notifications"
+                                  size={18}
+                                  color="#4b5563"
+                                />
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                onPress={() => deleteItem(item.id)}
+                                style={styles.actionBtn}
+                              >
+                                <Ionicons
+                                  name="trash"
+                                  size={18}
+                                  color="#ef4444"
+                                />
+                              </TouchableOpacity>
+                            </View>
                           </View>
-                        </View>
-                      </View>
-                      <View style={styles.actionRow}>
-                        <TouchableOpacity
-                          onPress={() => handleEditPress(item)}
-                          style={styles.actionBtn}
-                        >
-                          <Ionicons name="pencil" size={18} color="#4b5563" />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={() => openAlarmOptions(item)}
-                          style={styles.actionBtn}
-                        >
-                          <Ionicons
-                            name="notifications"
-                            size={18}
-                            color="#4b5563"
-                          />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={() => deleteItem(item.id)}
-                          style={styles.actionBtn}
-                        >
-                          <Ionicons name="trash" size={18} color="#ef4444" />
-                        </TouchableOpacity>
-                      </View>
+                        </Swipeable>
+                      ))}
                     </View>
                   ))}
-                </View>
-              ))}
-            {activeTab === "Notes" &&
-              filteredItems.map((item) => (
-                <TouchableOpacity
-                  key={item.id}
-                  onPress={() => handleEditPress(item)}
-                  style={styles.noteCard}
-                >
-                  <Text style={styles.taskTitle}>{item.title}</Text>
-                  <Text style={styles.taskDesc}>{item.description}</Text>
-                  <View style={styles.actionRow}>
-                    <TouchableOpacity onPress={() => deleteItem(item.id)}>
-                      <Ionicons
-                        name="trash-outline"
-                        size={18}
-                        color="#ef4444"
-                      />
+
+                {/* ========================================== */}
+                {/* 📌 UI: NOTES VIEW                           */}
+                {/* ========================================== */}
+                {activeTab === "Notes" &&
+                  filteredItems.map((item) => (
+                    <TouchableOpacity
+                      key={item.id}
+                      onPress={() => handleEditPress(item)}
+                      style={styles.noteCard}
+                    >
+                      <Text style={styles.taskTitle}>{item.title}</Text>
+                      <Text style={styles.taskDesc}>{item.description}</Text>
+                      <View style={styles.actionRow}>
+                        <TouchableOpacity onPress={() => deleteItem(item.id)}>
+                          <Ionicons
+                            name="trash-outline"
+                            size={18}
+                            color="#ef4444"
+                          />
+                        </TouchableOpacity>
+                      </View>
                     </TouchableOpacity>
-                  </View>
-                </TouchableOpacity>
-              ))}
-          </ScrollView>
+                  ))}
+              </ScrollView>
+            </FlingGestureHandler>
+          </FlingGestureHandler>
         </View>
 
-        {/* FAB */}
+        {/* ========================================== */}
+        {/* 📌 UI: FLOATING ACTION BUTTON (FAB)         */}
+        {/* ========================================== */}
         <TouchableOpacity
           style={styles.fab}
           onPress={handleAddPress}
@@ -517,6 +716,9 @@ export default function Index() {
           <Ionicons name="add" size={32} color="#fff" />
         </TouchableOpacity>
 
+        {/* ========================================== */}
+        {/* 📌 UI: ALARM MODAL                          */}
+        {/* ========================================== */}
         <Modal
           animationType="slide"
           transparent={true}
@@ -560,6 +762,9 @@ export default function Index() {
   );
 }
 
+// ============================================================================
+// === 📌 SECTION: STYLESHEET ===
+// ============================================================================
 const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   container: { flex: 1, backgroundColor: "#f9fafb" },
@@ -669,21 +874,31 @@ const styles = StyleSheet.create({
   checked: { backgroundColor: "#10b981", borderColor: "#10b981" },
   taskTitle: { fontSize: 16, fontWeight: "700", color: "#1f2937" },
   taskDesc: { fontSize: 13, color: "#4b5563", marginTop: 2 },
-  priorityText: { fontSize: 12, fontWeight: "700", textTransform: "uppercase" },
+  priorityText: {
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
   metaRow: { flexDirection: "row", alignItems: "center", marginTop: 6, gap: 4 },
   metaText: { fontSize: 12, color: "#4b5563", fontWeight: "500" },
   catBadge: {
     alignSelf: "flex-start",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 20,
+    marginTop: 10,
   },
   catText: {
     fontSize: 10,
-    fontWeight: "700",
-    color: "#1f2937",
+    fontWeight: "800",
     textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  priorityBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
   },
   actionRow: {
     flexDirection: "row",
@@ -748,4 +963,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   optionText: { fontSize: 16, color: "#111827", fontWeight: "500" },
+  swipeBtn: {
+    width: 55,
+    height: 55,
+    borderRadius: 15,
+    justifyContent: "center",
+    alignItems: "center",
+    marginLeft: 10,
+    marginBottom: 12,
+  },
 });
