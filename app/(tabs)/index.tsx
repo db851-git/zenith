@@ -1,6 +1,6 @@
 // 1. ALL IMPORTS GO HERE FIRST
 import { Ionicons } from "@expo/vector-icons";
-import * as Notifications from "expo-notifications";
+//import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
 import { onAuthStateChanged } from "firebase/auth";
 import {
@@ -44,14 +44,14 @@ import { auth, db } from "../../firebaseConfig";
 // ============================================================================
 // === 📌 SECTION: CONFIGURATIONS & NOTIFICATIONS ===
 // ============================================================================
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
-});
+// Notifications.setNotificationHandler({
+//   handleNotification: async () => ({
+//     shouldShowBanner: true,
+//     shouldShowList: true,
+//     shouldPlaySound: true,
+//     shouldSetBadge: false,
+//  }),
+//});
 
 // ENABLE SMOOTH ANIMATIONS FOR ANDROID
 if (
@@ -154,12 +154,20 @@ export default function Index() {
   // ==========================================
   // --- ACTIONS (ADD, EDIT, DELETE, STATUS) ---
   // ==========================================
+  // ==========================================
+  // --- ACTIONS (ADD, EDIT, DELETE, STATUS) ---
+  // ==========================================
   const handleAddPress = () => {
-    const targetType = activeTab === "Notes" ? "note" : "task";
-    router.push({
-      pathname: "/add",
-      params: { type: targetType },
-    });
+    if (activeTab === "Notes") {
+      // Open our new Pro Note Editor
+      router.push("/add-note");
+    } else {
+      // Open the standard Task Editor
+      router.push({
+        pathname: "/add",
+        params: { type: "task" },
+      });
+    }
   };
 
   const handleEditPress = (item: Item) => {
@@ -214,19 +222,19 @@ export default function Index() {
     const now = new Date();
 
     try {
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: "Reminder",
-          body: selectedTask.title,
-          sound: true,
-        } as any,
-        trigger: {
-          seconds: Math.max(
-            Math.floor((triggerDate.getTime() - now.getTime()) / 1000),
-            2,
-          ),
-        } as any,
-      });
+      //await Notifications.scheduleNotificationAsync({
+      //  content: {
+      //   title: "Reminder",
+      //    body: selectedTask.title,
+      //      sound: true,
+      //   } as any,
+      //   trigger: {
+      //     seconds: Math.max(
+      //       Math.floor((triggerDate.getTime() - now.getTime()) / 1000),
+      //        2,
+      //     ),
+      //    } as any,
+      //});
       Alert.alert("Success", "Alarm set!");
     } catch (e: any) {
       Alert.alert("Error", e.message);
@@ -324,19 +332,55 @@ export default function Index() {
   // ==========================================
   // --- LOADING / AUTH SCREENS ---
   // ==========================================
+  // ==========================================
+  // --- LOADING / AUTH SCREENS ---
+  // ==========================================
   if (loading)
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#000" />
       </View>
     );
+
+  // UPDATED: Added a button so you aren't stuck!
   if (!user)
     return (
       <View style={styles.center}>
-        <Text>Please login via Profile</Text>
+        <Ionicons
+          name="lock-closed-outline"
+          size={64}
+          color="#9ca3af"
+          style={{ marginBottom: 20 }}
+        />
+        <Text
+          style={{
+            fontSize: 18,
+            fontWeight: "600",
+            color: "#374151",
+            marginBottom: 10,
+          }}
+        >
+          Session Expired
+        </Text>
+        <Text style={{ color: "#6b7280", marginBottom: 25 }}>
+          Please log in to see your tasks.
+        </Text>
+
+        <TouchableOpacity
+          onPress={() => router.push("/profile")}
+          style={{
+            backgroundColor: "#111827",
+            paddingHorizontal: 30,
+            paddingVertical: 12,
+            borderRadius: 25,
+          }}
+        >
+          <Text style={{ color: "#fff", fontWeight: "bold" }}>
+            Go to Profile Login
+          </Text>
+        </TouchableOpacity>
       </View>
     );
-
   // ============================================================================
   // === 📌 SECTION: RENDER UI STARTS HERE ===
   // ============================================================================
@@ -681,25 +725,60 @@ export default function Index() {
                 {/* 📌 UI: NOTES VIEW                           */}
                 {/* ========================================== */}
                 {activeTab === "Notes" &&
-                  filteredItems.map((item) => (
-                    <TouchableOpacity
-                      key={item.id}
-                      onPress={() => handleEditPress(item)}
-                      style={styles.noteCard}
-                    >
-                      <Text style={styles.taskTitle}>{item.title}</Text>
-                      <Text style={styles.taskDesc}>{item.description}</Text>
-                      <View style={styles.actionRow}>
-                        <TouchableOpacity onPress={() => deleteItem(item.id)}>
-                          <Ionicons
-                            name="trash-outline"
-                            size={18}
-                            color="#ef4444"
-                          />
-                        </TouchableOpacity>
-                      </View>
-                    </TouchableOpacity>
-                  ))}
+                  filteredItems.map((item) => {
+                    // 1. Strip HTML tags and remove HTML spaces for a clean plain-text preview
+                    const cleanPreview = item.description
+                      ? item.description
+                          .replace(/<[^>]+>/g, "")
+                          .replace(/&nbsp;/g, " ")
+                      : "No content...";
+
+                    return (
+                      <TouchableOpacity
+                        key={item.id}
+                        // 2. Send the user to the Rich Text Editor with this note's data
+                        onPress={() =>
+                          router.push({
+                            pathname: "/add-note",
+                            params: {
+                              id: item.id,
+                              title: item.title,
+                              description: item.description,
+                            },
+                          })
+                        }
+                        style={styles.upgradedNoteCard}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.noteTopRow}>
+                          <Text
+                            style={styles.upgradedNoteTitle}
+                            numberOfLines={1}
+                          >
+                            {item.title}
+                          </Text>
+                        </View>
+
+                        {/* 3. Display the cleaned text */}
+                        <Text style={styles.upgradedNoteDesc} numberOfLines={3}>
+                          {cleanPreview}
+                        </Text>
+
+                        <View style={styles.noteFooter}>
+                          <TouchableOpacity
+                            onPress={() => deleteItem(item.id)}
+                            style={styles.noteDeleteBtn}
+                          >
+                            <Ionicons
+                              name="trash-outline"
+                              size={18}
+                              color="#ef4444"
+                            />
+                          </TouchableOpacity>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
               </ScrollView>
             </FlingGestureHandler>
           </FlingGestureHandler>
@@ -775,6 +854,48 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 20,
     marginTop: 10,
+  },
+  upgradedNoteCard: {
+    backgroundColor: "#fff",
+    padding: 16,
+    borderRadius: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#f3f4f6",
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  noteTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  upgradedNoteTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#111827",
+    flex: 1,
+    marginRight: 10,
+  },
+  upgradedNoteDesc: {
+    fontSize: 14,
+    color: "#4b5563",
+    lineHeight: 20,
+    marginBottom: 12,
+  },
+  noteFooter: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    borderTopWidth: 1,
+    borderTopColor: "#f9fafb",
+    paddingTop: 10,
+  },
+  noteDeleteBtn: {
+    padding: 4,
   },
   dateText: {
     color: "#6b7280",
